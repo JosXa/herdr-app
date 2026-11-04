@@ -383,6 +383,7 @@ pub struct AppWindow {
     seen: BTreeSet<String>,
     bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     hidden_fit: pane_size::HiddenFit,
+    growth: RefCell<crate::focus_grow::Growth>,
     drag: Option<Drag>,
     written_layout: String,
     /// The shown layout as its file has it; `chrome` is this plus the clicks
@@ -467,6 +468,8 @@ impl AppWindow {
         let seen = std::fs::read_to_string(file("seen.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let initial_view: Option<crate::mirror::View> = std::fs::read_to_string(file("view.json")).ok().and_then(|s| serde_json::from_str(&s).ok());
         let focus_history = initial_view.as_ref().map(|view| view.focus_history.clone()).unwrap_or_default();
+        let mut growth = crate::focus_grow::Growth::default();
+        growth.preferences = initial_view.as_ref().map(|view| view.focus_grow.clone()).unwrap_or_default();
         let restoring_history = focus_history.past.last().cloned();
         let mut w = AppWindow {
             core,
@@ -493,6 +496,7 @@ impl AppWindow {
             seen,
             bounds: Default::default(),
             hidden_fit: Default::default(),
+            growth: RefCell::new(growth),
             drag: None,
             written_layout: String::new(),
             file_chrome: default_layout("main"),
@@ -1095,6 +1099,7 @@ impl AppWindow {
     fn save_view(&mut self) {
         let mut view = crate::mirror::View::capture(&self.model);
         view.focus_history = self.focus_history.clone();
+        view.focus_grow = self.growth.borrow().preferences.clone();
         if let Some(saved) = &self.initial_view {
             view.preserve_unloaded(saved, |machine| self.documents.get(machine.unwrap_or("")).is_some_and(|s| s.document.is_some()));
         }
@@ -1390,6 +1395,7 @@ impl AppWindow {
 
     /// Creates what's visible, drops what isn't, publishes state, saves, focuses.
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.growth.borrow_mut().retain(|id| self.model.tab(id).is_some());
         self.model.order_spaces();
         let (model, live) = (&self.model, &self.live);
         self.swapped.retain(|p, a| model.address_of(p).is_some() && live.contains_key(a));
@@ -1987,6 +1993,7 @@ impl AppWindow {
             }
             if self.model.spaces.iter().any(|s| s.machine.as_deref().is_some_and(|m| !states.contains_key(m))) {
                 let mut view = crate::mirror::View::capture(&self.model);
+                view.focus_grow = self.growth.borrow().preferences.clone();
                 if let Some(saved) = &self.initial_view {
                     view.preserve_unloaded(saved, |m| self.documents.get(m.unwrap_or("")).is_some_and(|s| s.document.is_some()));
                 }
@@ -3258,14 +3265,31 @@ impl AppWindow {
                     _ => true,
                 };
             }
+            "tab.focus_grow" => {
+                let id = Self::owned(a, "id").or_else(|| self.model.active_tab().map(|t| t.id.clone()));
+                let Some(id) = id.filter(|id| self.model.tab(id).is_some()) else { return self.fail("no tab to grow") };
+                for key in ["enabled", "suspended", "force"] {
+                    if a.get(key).is_some_and(|v| !v.is_boolean() && !v.is_null()) { return self.fail(format!("{key} must be a boolean")); }
+                }
+                let mut growth = self.growth.borrow_mut();
+                let preference = growth.preferences.entry(id.clone()).or_default();
+                if let Some(enabled) = a.get("enabled").and_then(Value::as_bool) { preference.enabled = enabled; }
+                else if a.get("suspended").is_none() && a.get("force").is_none() { preference.enabled = !preference.enabled; }
+                if let Some(suspended) = a.get("suspended").and_then(Value::as_bool) { preference.suspended = suspended; }
+                let resume = preference.enabled && !preference.suspended;
+                self.reply = Some(json!({"enabled": preference.enabled, "suspended": preference.suspended}));
+                if resume { growth.resume(&id); }
+            }
             "layout.resize" => {
                 let id = Self::arg(a, "id").unwrap_or_default();
+                self.begin_growth_resize(id);
                 let Some(n) = self.find_node_mut(id) else { return self.fail(format!("no node {id:?}")) };
                 if let Some(px) = a.get("px").and_then(Value::as_f64) {
                     n.size = Some(Span::Px { px: px as f32 });
                 } else if let Some(w) = a.get("weight").and_then(Value::as_f64) {
                     n.size = Some(Span::Weight { weight: w as f32 });
                 }
+                self.hold_growth(id);
             }
             "layout.reset" => {
                 let name = Self::owned(a, "name").unwrap_or_else(|| self.layout_name.clone());
@@ -4014,7 +4038,13 @@ impl AppWindow {
         let mut el = div().relative().overflow_hidden().size_full().flex();
         let bounds_map = self.bounds.clone();
         let id = n.id.clone();
-        el = el.child(canvas(move |b, _, _| { bounds_map.borrow_mut().insert(id, b); }, |_, _, _, _| {}).absolute().size_full());
+        let context = matches!(n.content(), Some(Content::Context { .. })).then(|| cx.entity().downgrade());
+        el = el.child(canvas(move |b, _, cx| {
+            let previous = bounds_map.borrow_mut().insert(id, b);
+            if previous.is_none_or(|old| old.size != b.size) && let Some(entity) = context {
+                let _ = entity.update(cx, |_, cx| cx.notify());
+            }
+        }, |_, _, _, _| {}).absolute().size_full());
         el = apply_look(el, n, focused.contains(&n.id));
         if n.window_drag {
             el = self.window_drag(el, cx);
@@ -4116,7 +4146,10 @@ impl AppWindow {
                     .into_any_element(),
             },
             Content::Context { .. } => match self.model.active_tab() {
-                Some(c) => self.render_node(c.shown(), focused, self.pane_frame(), cx),
+                Some(c) => {
+                    let grown = c.zoomed.is_none().then(|| self.growth.borrow().displayed(&c.id)).flatten();
+                    self.render_node(grown.as_deref().unwrap_or_else(|| c.shown()), focused, self.pane_frame(), cx)
+                }
                 None if self.documents.get("").is_some_and(|s| s.layout() == "loading") => div().size_full().into_any_element(),
                 None => {
                     let key = crate::keys::listing().into_iter().find(|(_, _, a)| a == "space.new").map(|(_, k, _)| format!(" ({k})"));
@@ -4243,6 +4276,7 @@ impl AppWindow {
                         cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                             if let Some(space) = this.model.space_of(&container)
                                 && this.require_document(space.machine.as_deref()).is_err() { return; }
+                            this.begin_growth_resize(&container);
                             this.drag = Some(Drag { container: container.clone(), index, axis });
                             cx.stop_propagation();
                         }),
@@ -4301,6 +4335,7 @@ impl AppWindow {
                 set(children, &b_id, Span::Weight { weight: sum * (total - new_a) / total });
             }
         }
+        self.hold_growth(&container);
     }
 
     fn render_overlays(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -4836,6 +4871,7 @@ impl Render for AppWindow {
             self.refresh_snapshot_mods(cx);
         }
         let focused = self.focused_path(window);
+        if let Some(tab) = self.model.active_tab() { self.grown_tab(tab, window); }
         let tree = self.render_node(&self.chrome, &focused, None, cx);
         let tree = self.window_frame(tree, window, cx);
         let overlays = self.render_overlays(window.viewport_size(), cx);

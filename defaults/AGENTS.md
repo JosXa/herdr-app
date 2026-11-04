@@ -122,6 +122,16 @@ the highlighted line shows where it will land.
   `settled` on each tab. The shipped layouts don't use it (they list every
   tab); a mod that does can hide or fold settled tabs. Showing one, or an
   agent in it needing the user, brings it back.
+- Focus growth gives the selected pane more space while preserving its split tree.
+  It runs on this screen and leaves the machine's shared sizes unchanged. Use
+  `tab.focus_grow {id?, enabled?, suspended?, force?}` to toggle a tab, set either
+  boolean, or recalculate with `force: true`. Suspension takes priority over force.
+  Disabling keeps the current proportions; enabling recalculates immediately.
+  Separator dragging keeps the manual proportions until a different pane is selected
+  or growth is explicitly enabled or forced. `layout.resize` has the same behavior.
+  Zoomed tabs and tabs with one pane keep their normal geometry. Sidebar, dialog,
+  float and peek focus retain the selected pane's proportions. Tab preferences
+  stay in this screen's `view.json`.
 - A **pane** is a terminal on screen, or a **mod** beside them (a markdown
   viewer, a board, a git panel): `pane.split {direction, mod, props}`. A
   mod pane splits, zooms, closes and gets a header like any pane, keeps
@@ -652,6 +662,8 @@ What's about the user, never a look:
 
 - `zoom` scales the whole app: terminals, mods, the layout's px sizes
   (0.5 to 3; the zoom keys change it). Write sizes as designed at zoom 1.
+- `focus_grow` enables focus growth globally (default true). Each tab also has
+  its own switch through `tab.focus_grow`; both must be enabled.
 - `sounds`: `{ "enabled": true, "done": "<file>", "blocked": "<file>" }`.
   When an agent needs the person, or finishes while they aren't looking at
   it, Herdr plays a sound and (unless they're looking) posts a toast that

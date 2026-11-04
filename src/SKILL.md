@@ -11,6 +11,12 @@ Move existing work with `tab.move {id, space, index?}` or `pane.move {pane, spac
 Moves preserve running processes and IDs and require the same machine, including
 between spaces on one remote machine. Empty source tabs and spaces close.
 
+Focus growth enlarges the selected pane on this screen without changing shared
+sizes. `tab.focus_grow {id?, enabled?, suspended?, force?}` controls a tab;
+`settings.json` has the global `focus_grow` switch. Both default to enabled.
+Suspension takes priority over force. Manual resizing holds its proportions until
+another pane is selected or growth is explicitly enabled or forced.
+
 ## Inspect before acting
 
 ```sh

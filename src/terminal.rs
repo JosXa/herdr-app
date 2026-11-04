@@ -187,6 +187,7 @@ impl Grid {
         self.vt.resize(cols, rows, dev.0, dev.1);
         self.vt_cell = dev;
         if let Some(chan) = self.channel {
+            crate::bench::count(&crate::bench::RESIZE);
             self.core.resize(chan, cols, rows);
             // Mode 2048 programs wait for this report, not SIGWINCH.
             let replies = self.vt.take_replies();
