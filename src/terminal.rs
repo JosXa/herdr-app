@@ -1372,7 +1372,7 @@ fn ligature_features(enabled: bool) -> FontFeatures {
 fn cell_font(bold: bool, italic: bool) -> Font {
     let mut f = font(crate::settings::terminal_font());
     f.features = ligature_features(false);
-    f.weight = if bold { FontWeight::BOLD } else { FontWeight::MEDIUM };
+    f.weight = if bold { FontWeight::BOLD } else { FontWeight::NORMAL };
     f.style = if italic { FontStyle::Italic } else { FontStyle::Normal };
     f
 }
@@ -2136,6 +2136,14 @@ impl Focusable for TerminalView {
 mod tests {
     use super::{ScrollTarget, pages_to_lines, scroll_target};
     use serde_json::{Value, json};
+
+    #[test]
+    fn terminal_text_uses_regular_weight_unless_bold() {
+        for italic in [false, true] {
+            assert_eq!(super::cell_font(false, italic).weight, gpui::FontWeight::NORMAL);
+            assert_eq!(super::cell_font(true, italic).weight, gpui::FontWeight::BOLD);
+        }
+    }
 
     #[gpui::test]
     fn terminal_release_ends_window_text_selection(cx: &mut gpui::TestAppContext) {
