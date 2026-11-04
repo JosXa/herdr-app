@@ -37,7 +37,7 @@ fn empty_root() -> Node {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct View {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_focus_history")]
     pub(crate) focus_history: FocusHistory,
     active: Option<String>,
     spaces: BTreeMap<String, Option<String>>,
@@ -50,6 +50,11 @@ pub struct View {
 pub(crate) struct FocusHistory {
     pub(crate) past: Vec<String>,
     pub(crate) future: Vec<String>,
+}
+
+fn deserialize_focus_history<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<FocusHistory, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -234,6 +239,31 @@ mod tests {
         m.add_space("s", "work", "/work", Tab::new("t", "task", "p", "t1"));
         m
     }
+    #[test]
+    fn invalid_optional_history_preserves_the_rest_of_the_view() {
+        use serde_json::json;
+        let mut original = model();
+        original.tab_mut("t").unwrap().zoomed = Some("p".into());
+        original.settle("t", 12);
+        let mut view = View::capture(&original);
+        view.focus_history = FocusHistory { past: vec!["p".into()], future: vec!["next".into()] };
+        let valid = serde_json::to_value(&view).unwrap();
+        for history in [None, Some(json!(null)), Some(json!({})), Some(json!({"past":7,"future":[]})), Some(json!({"past":[],"future":"bad"})), Some(json!({"past":[null],"future":[]})), Some(valid["focus_history"].clone())] {
+            let mut value = valid.clone();
+            if let Some(history) = &history { value["focus_history"] = history.clone(); }
+            else { value.as_object_mut().unwrap().remove("focus_history"); }
+            let restored: View = serde_json::from_value(value).unwrap();
+            let expected = if history.as_ref() == Some(&valid["focus_history"]) { view.focus_history.clone() } else { FocusHistory::default() };
+            assert_eq!(restored.focus_history, expected);
+            let mut target = model();
+            restored.apply(&mut target);
+            assert_eq!(target.active.as_deref(), Some("s"));
+            assert_eq!(target.focused_pane().as_deref(), Some("p"));
+            assert_eq!(target.tab("t").unwrap().zoomed.as_deref(), Some("p"));
+            assert_eq!(target.tab("t").unwrap().settled, Some(12));
+        }
+    }
+
     #[test]
     fn focus_zoom_and_settle_are_private() {
         let mut m = model();
