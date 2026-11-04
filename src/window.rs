@@ -9,6 +9,7 @@ mod floats;
 mod movable;
 mod pane_drag;
 mod pane_size;
+mod focus_history;
 mod titlebar;
 
 use crate::layout::{Axis, Background as Paint, Content, Fit, HeaderContent, Kind, Line, Node, PaneFrame, Size as Span};
@@ -437,6 +438,8 @@ pub struct AppWindow {
     /// Whether the last sync showed the tab, to hand it the keyboard back when a stack shows it again.
     tab_shown: bool,
     pane_history: Vec<String>,
+    focus_history: focus_history::FocusHistory,
+    restoring_history: Option<String>,
     window_active: bool,
     /// The system's appearance; a layout with a light and a dark theme follows it.
     system_dark: bool,
@@ -464,6 +467,9 @@ impl AppWindow {
         let runtime = ShellRuntime::new(cx).map_err(|e| tracing::error!("script runtime failed, mods are off: {e:#}")).ok();
         mods::note_fonts(cx);
         let seen = std::fs::read_to_string(file("seen.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let initial_view: Option<crate::mirror::View> = std::fs::read_to_string(file("view.json")).ok().and_then(|s| serde_json::from_str(&s).ok());
+        let focus_history = initial_view.as_ref().map(|view| view.focus_history.clone()).unwrap_or_default();
+        let restoring_history = focus_history.past.last().cloned();
         let mut w = AppWindow {
             core,
             runtime,
@@ -520,7 +526,7 @@ impl AppWindow {
                 local.connection(true, None, None);
                 [(String::new(), local)].into()
             },
-            initial_view: std::fs::read_to_string(file("view.json")).ok().and_then(|s| serde_json::from_str(&s).ok()),
+            initial_view,
             pointer: Point::default(),
             drag_from: None,
             titlebar_applied: None,
@@ -529,6 +535,8 @@ impl AppWindow {
             synced_model_pane: None,
             tab_shown: true,
             pane_history: Vec::new(),
+            focus_history,
+            restoring_history,
             window_active: true,
             system_dark: is_dark(window.appearance()),
             file_events: crate::files::watch(&mods::app_dir()),
@@ -1089,6 +1097,7 @@ impl AppWindow {
 
     fn save_view(&mut self) {
         let mut view = crate::mirror::View::capture(&self.model);
+        view.focus_history = self.focus_history.clone();
         if let Some(saved) = &self.initial_view {
             view.preserve_unloaded(saved, |machine| self.documents.get(machine.unwrap_or("")).is_some_and(|s| s.document.is_some()));
         }
@@ -1778,7 +1787,15 @@ impl AppWindow {
         self.terms.values().find(|term| term.view.read(cx).owns_keyboard_focus(window, cx)).map(|term| term.address.clone())
     }
 
-    fn publish_keyboard_terminal(&self, window: &Window, cx: &mut Context<Self>) {
+    fn publish_keyboard_terminal(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(pane) = self.keyboard_pane(window, cx) {
+            if self.restoring_history.as_ref().is_some_and(|saved| saved == &pane || (self.model.tab_of(saved).is_none() && self.documents.get(saved.split_once('/').map_or("", |(machine, _)| machine)).is_some_and(|slot| slot.document.is_some()))) {
+                self.restoring_history = None;
+            }
+            if self.restoring_history.is_none() && self.focus_history.visit(&pane) {
+                self.save_view();
+            }
+        }
         if mods::publish_keyboard_terminal(json!(self.keyboard_terminal(window, cx))) {
             self.refresh_snapshot_mods(cx);
         }
@@ -2820,6 +2837,9 @@ impl AppWindow {
             && let Err(error) = self.require_document(space.machine.as_deref())
         { return json!({"error":error}); }
         self.reply = None;
+        if person && name == "pane.focus" {
+            self.restoring_history = None;
+        }
         self.dispatch(name, &args, person, window, cx);
         self.flush_documents(false, window, cx);
         self.reply.take().unwrap_or_else(|| json!({ "ok": true }))
@@ -4872,12 +4892,20 @@ impl Render for AppWindow {
                 }
             }))
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                this.restoring_history = None;
                 if ev.keystroke.key == "escape" && this.pane_drag.is_some() {
                     this.cancel_pane_drag(cx);
                     cx.stop_propagation();
                 }
             }))
-            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, _| this.pointer = ev.position))
+            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                this.pointer = ev.position;
+                this.restoring_history = None;
+                if let MouseButton::Navigate(direction) = ev.button {
+                    this.navigate_history(direction, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 this.drag_window(ev, window);
                 if this.drag.is_none() {
@@ -5625,6 +5653,151 @@ export default class Probe extends View {
                 assert_eq!(this.live[&terminal]["labels"]["herdr.space"], "");
             }
         }));
+    }
+
+    #[test]
+    fn mouse_buttons_traverse_actual_pane_visits() {
+        in_own_process("mouse_history");
+    }
+
+    #[test]
+    fn mouse_history_survives_saved_view_recreation() {
+        in_own_process("mouse_history_restore");
+    }
+
+    #[gpui::test]
+    fn mouse_history_restore(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("mouse_history_restore") { return; }
+        let layout = json!({"id":"main", "type":"block", "content":{"tab":"active"}});
+        let model;
+        let history;
+        {
+            let (view, cx) = open_window(cx, "test", "", layout.clone());
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.model = crate::model::Model::default();
+                for id in ["a", "b", "c"] {
+                    this.model.add_space(id, id, "", crate::model::Tab::new(&format!("tab-{id}"), id, id, &format!("t-{id}")));
+                }
+                this.documents.entry(String::new()).or_default().document = Some(crate::mirror::Document::capture(&this.model, None));
+                window.activate_window();
+                this.sync(window, cx);
+            }));
+            cx.run_until_parked();
+            for id in ["a", "b", "c"] {
+                cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.focus", json!({"pane":id}), window, cx)));
+                cx.run_until_parked();
+            }
+            cx.update(|window, cx| view.update(cx, |this, cx| this.navigate_history(gpui::NavigationDirection::Back, window, cx)));
+            cx.run_until_parked();
+            (model, history) = view.update(cx, |this, _| (crate::mirror::Document::capture(&this.model, None), this.focus_history.clone()));
+            assert_eq!(history.future, ["c"]);
+            let text = std::fs::read_to_string(crate::mods::app_dir().join("view.json")).unwrap();
+            let saved: crate::mirror::View = serde_json::from_str(&text).unwrap();
+            assert_eq!(saved.focus_history, history);
+            let mut legacy: serde_json::Value = serde_json::from_str(&text).unwrap();
+            legacy.as_object_mut().unwrap().remove("focus_history");
+            assert_eq!(serde_json::from_value::<crate::mirror::View>(legacy).unwrap().focus_history, Default::default());
+            cx.update(|window, _| window.remove_window());
+        }
+        let (view, cx) = open_window(cx, "test", "", layout);
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            assert_eq!(this.focus_history, history);
+            this.navigate_history(gpui::NavigationDirection::Forward, window, cx);
+            assert_eq!(this.focus_history, history);
+            this.model.add_space("startup", "startup", "", crate::model::Tab::new("startup-tab", "startup", "startup-pane", "startup-terminal"));
+            window.activate_window();
+            this.sync(window, cx);
+            assert_eq!(this.focus_history, history);
+            model.replace(&mut this.model, None);
+            this.initial_view.as_ref().unwrap().apply_machine(&mut this.model, None);
+            this.documents.entry(String::new()).or_default().document = Some(crate::mirror::Document::capture(&this.model, None));
+            window.activate_window();
+            this.sync(window, cx);
+        }));
+        cx.run_until_parked();
+        for (direction, expected) in [(gpui::NavigationDirection::Forward,"c"), (gpui::NavigationDirection::Back,"b"), (gpui::NavigationDirection::Back,"a")] {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.navigate_history(direction, window, cx);
+                assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some(expected));
+            }));
+            cx.run_until_parked();
+        }
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.spaces.retain(|space| space.id != "b");
+            this.navigate_history(gpui::NavigationDirection::Forward, window, cx);
+            assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("c"));
+            assert!(!this.focus_history.past.iter().chain(&this.focus_history.future).any(|pane| pane == "b"));
+        }));
+    }
+
+    #[gpui::test]
+    fn mouse_history(cx: &mut gpui::TestAppContext) {
+        use gpui::*;
+        use serde_json::json;
+        if !running_alone("mouse_history") { return; }
+        let (view, cx) = open_window(cx, "test", "import { View, div } from 'gpui-kit'; export default class Sidebar extends View { render() { return div().size_full(); } }", json!({ "id": "root", "type": "row", "children": [
+            { "id": "sidebar", "type": "block", "size": {"px": 100}, "content": { "mod": "test" } },
+            { "id": "main", "type": "block", "content": { "tab": "active" } }
+        ] }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model = crate::model::Model::default();
+            for id in ["a", "b", "c"] {
+                this.model.add_space(id, id, "", crate::model::Tab::new(&format!("tab-{id}"), id, id, &format!("t-{id}")));
+            }
+            window.activate_window();
+            this.sync(window, cx);
+        }));
+        cx.run_until_parked();
+        for id in ["a", "b", "c"] {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.focus", json!({"pane": id}), window, cx)));
+            cx.run_until_parked();
+        }
+        for (x, direction, expected) in [
+            (200., NavigationDirection::Back, "b"),
+            (20., NavigationDirection::Back, "a"),
+            (200., NavigationDirection::Forward, "b"),
+            (20., NavigationDirection::Forward, "c"),
+            (20., NavigationDirection::Back, "b"),
+        ] {
+            let at = point(px(x), px(80.));
+            cx.simulate_mouse_down(at, MouseButton::Navigate(direction), Default::default());
+            cx.simulate_mouse_up(at, MouseButton::Navigate(direction), Default::default());
+            cx.run_until_parked();
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some(expected));
+                assert_eq!(this.model.focused_pane().as_deref(), Some(expected));
+            }));
+        }
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.focus", json!({"pane": "a"}), window, cx)));
+        cx.run_until_parked();
+        cx.simulate_mouse_down(point(px(20.), px(80.)), MouseButton::Navigate(NavigationDirection::Forward), Default::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("a"));
+        }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.focus.focus(window, cx);
+            this.model.focus_pane("c");
+            this.publish_keyboard_terminal(window, cx);
+            assert_eq!(this.keyboard_pane(window, cx), None);
+        }));
+        cx.run_until_parked();
+        cx.simulate_mouse_down(point(px(20.), px(80.)), MouseButton::Navigate(NavigationDirection::Back), Default::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("a"));
+        }));
+        for id in ["c", "b", "a"] {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.focus", json!({"pane": id}), window, cx)));
+            cx.run_until_parked();
+        }
+        cx.update(|_, cx| view.update(cx, |this, _| {
+            this.model.spaces.retain(|space| space.id != "b");
+        }));
+        cx.simulate_mouse_down(point(px(200.), px(80.)), MouseButton::Navigate(NavigationDirection::Back), Default::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("c"))));
     }
 
     #[gpui::test]
