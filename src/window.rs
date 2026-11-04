@@ -3129,6 +3129,11 @@ impl AppWindow {
                 self.switch_layout(Self::arg(a, "name"), window, cx);
                 return;
             }
+            "layout.refresh_background" => {
+                refresh_background(self.chrome.background.as_ref(), window, cx);
+                cx.notify();
+                return;
+            }
             "layout.clone" => {
                 self.save();
                 let name = Self::owned(a, "name").unwrap_or_else(|| self.layout_name.clone());
@@ -4860,6 +4865,12 @@ fn invalidate_image(resource: &gpui::Resource, window: &mut Window, cx: &mut gpu
     cx.remove_asset::<gpui::ImgResourceLoader>(resource);
 }
 
+fn refresh_background(background: Option<&Paint>, window: &mut Window, cx: &mut gpui::App) {
+    if let Some(Paint::Image { image, .. }) = background {
+        invalidate_image(&gpui::Resource::Path(mods::app_dir().join(image).into()), window, cx);
+    }
+}
+
 /// The changed paths, plus the files inside changed mod folders (a folder
 /// renamed into place arrives as one event). Runs on the UI thread: skips what
 /// the watcher ignores (hidden, `node_modules`) and stops at a mod-sized limit.
@@ -4949,6 +4960,37 @@ mod tests {
         assert_eq!(super::new_space_machine(&json!({}), true, &model), None);
         model.active = Some("remote".into());
         assert_eq!(super::new_space_machine(&json!({}), true, &model).as_deref(), Some("second"));
+    }
+
+    #[gpui::test]
+    fn root_background_refresh_reads_replaced_file_at_the_same_path(cx: &mut TestAppContext) {
+        use gpui::{ImgResourceLoader, Resource};
+        let home = std::env::temp_dir().join(format!("herdr-background-refresh-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let file = home.join("background.png");
+        let replacement = home.join("replacement.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255])).save(&file).unwrap();
+        let background = super::Paint::Image {
+            image: file.to_string_lossy().into_owned(),
+            fit: super::Fit::Cover,
+        };
+        let resource = Resource::Path(file.clone().into());
+        cx.update(|cx| { cx.fetch_asset::<ImgResourceLoader>(&resource); });
+        cx.background_executor.run_until_parked();
+        let old = cx.update(|cx| cx.cached_asset::<ImgResourceLoader>(&resource)).unwrap().unwrap();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 255, 0, 255])).save(&replacement).unwrap();
+        std::fs::rename(replacement, &file).unwrap();
+        assert_eq!(cx.update(|cx| cx.cached_asset::<ImgResourceLoader>(&resource)).unwrap().unwrap().id, old.id);
+        let context = cx.add_empty_window();
+        context.update(|window, cx| {
+            super::refresh_background(Some(&background), window, cx);
+            cx.fetch_asset::<ImgResourceLoader>(&resource);
+        });
+        cx.background_executor.run_until_parked();
+        let refreshed = cx.update(|cx| cx.cached_asset::<ImgResourceLoader>(&resource)).unwrap().unwrap();
+        assert_ne!(refreshed.id, old.id);
+        assert_eq!(&refreshed.as_bytes(0).unwrap()[..4], &[0, 255, 0, 255]);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[gpui::test]

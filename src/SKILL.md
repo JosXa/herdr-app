@@ -100,8 +100,8 @@ those files or the generated guide. The app rewrites them on start.
 - Shipped mods belong to Herdr: duplicate with `mod.clone` before editing.
   Shipped layouts likewise use `layout.clone` for a personal copy.
   Discover required arguments with `herdr-app commands`.
-- Save to reload. A broken save keeps the old version running and reports
-  an error in `status`; a still-working screen is not proof the edit worked.
+- Saving reloads config; errors appear in `status` and retain the previous version.
+  For root-image file changes, run `herdr-app do layout.refresh_background`.
 - Make only the requested change. Don't touch unrelated mods or settings.
 - Use theme colors. Do not retain a mod's `cx` across callbacks; each
   callback receives its own. Native animations, not redraw timers, keep
