@@ -360,7 +360,9 @@ impl Model {
         let destination_space = destination.id.clone();
         let destination_tab = destination_tab.map(|t| t.id.clone());
         if destination_tab.as_deref() == self.tab_of(pane).map(|t| t.id.as_str()) {
-            return target.is_some_and(|target| self.move_pane(pane, target, edge));
+            if !target.is_some_and(|target| self.move_pane(pane, target, edge)) { return false; }
+            self.focus_pane(pane);
+            return true;
         }
         let mut block = block;
         block.size = None;
@@ -877,6 +879,22 @@ mod tests {
         assert!(m.move_pane_to("viewer", None, Some("c2"), None, None));
         assert_eq!(m.space("p2").unwrap().tabs.len(), 1);
         assert_eq!(m.tab("c2").unwrap().root.panes().len(), 3);
+    }
+
+    #[test]
+    fn moving_within_an_inactive_tab_selects_it_only_after_success() {
+        let mut m = model_with_one();
+        assert!(m.split("x1", Axis::Row, "x2", "t2"));
+        m.add_space("p2", "visible", "", Tab::new("c2", "visible", "x3", "t3"));
+        for (pane, tab, target) in [("x1", None, Some("x1")), ("missing", None, Some("x2")), ("x1", Some("c1"), None)] {
+            assert!(!m.move_pane_to(pane, None, tab, target, None));
+            assert_eq!(m.active_tab().unwrap().id, "c2");
+            assert_eq!(m.focused_pane().as_deref(), Some("x3"));
+        }
+        assert!(m.move_pane_to("x1", None, None, Some("x2"), None));
+        assert_eq!(m.active_space().unwrap().id, "p1");
+        assert_eq!(m.active_tab().unwrap().id, "c1");
+        assert_eq!(m.focused_pane().as_deref(), Some("x1"));
     }
 
     #[test]

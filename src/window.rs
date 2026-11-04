@@ -1767,6 +1767,7 @@ impl AppWindow {
         }
         self.written_where.retain(|a, _| self.live.contains_key(a));
         for (addr, labels) in want {
+            if self.changing_terminals.contains(&addr) { continue; }
             let place = labels.to_string();
             if self.written_where.get(&addr) == Some(&place) || !self.live.contains_key(&addr) {
                 continue;
@@ -5362,7 +5363,7 @@ mod tests {
                 assert!(this.pane_drag.is_none());
             });
         }
-        cx.update(|_, cx| view.update(cx, |this, cx| {
+        cx.update(|window, cx| view.update(cx, |this, cx| {
             for machine in [None, Some("vps")] {
                 let mut model = crate::model::Model::default();
                 model.add_space("source", "source", "", crate::model::Tab::new("tab", "work", "pane", "terminal"));
@@ -5380,6 +5381,24 @@ mod tests {
                 assert_eq!(labels["herdr.space"], "target");
                 assert_eq!(labels["herdr.tab"], crate::mirror::local(&tab.id, machine));
                 assert!(labels["where"].as_str().unwrap().starts_with("target / "));
+                this.written_where.remove(&terminal);
+                this.live.insert(terminal.clone(), json!({"labels":{"herdr.space":"","herdr.tab":""},"keep":true}));
+                let (tx, rx) = std::sync::mpsc::channel();
+                this.changing_terminals.insert(terminal.clone());
+                this.pending_terminals.insert(terminal.clone(), super::PendingTerminalChange { change: super::TerminalChange::Park, reply: rx });
+                this.model.space_mut(&space).unwrap().name = "renamed".into();
+                let destination = crate::mirror::qualify("other", machine);
+                assert!(this.model.move_pane_to(&pane, None, Some(&destination), None, None));
+                this.write_where(cx);
+                assert!(!this.written_where.contains_key(&terminal));
+                tx.send(Ok(())).unwrap();
+                this.live.get_mut(&terminal).unwrap()["keep"] = json!(false);
+                let pending = this.pending_terminals.remove(&terminal).unwrap();
+                this.apply_terminal_change(terminal.clone(), pending.change, pending.reply.try_recv().unwrap(), window, cx);
+                this.reconcile(window, cx);
+                assert!(this.model.pane_of(&terminal).is_none());
+                assert!(!this.changing_terminals.contains(&terminal));
+                assert_eq!(this.live[&terminal]["labels"]["herdr.space"], "");
             }
         }));
     }
