@@ -37,11 +37,19 @@ fn empty_root() -> Node {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct View {
+    #[serde(default)]
+    pub(crate) focus_history: FocusHistory,
     active: Option<String>,
     spaces: BTreeMap<String, Option<String>>,
     tabs: BTreeMap<String, TabView>,
     recent: Vec<Recent>,
     attention: BTreeMap<String, Seen>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct FocusHistory {
+    pub(crate) past: Vec<String>,
+    pub(crate) future: Vec<String>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -142,6 +150,7 @@ impl Document {
 impl View {
     pub fn capture(model: &Model) -> Self {
         Self {
+            focus_history: Default::default(),
             active: model.active.clone(),
             recent: model.recent.clone(),
             spaces: model.spaces.iter().map(|s| (s.id.clone(), s.active.clone())).collect(),

@@ -252,7 +252,7 @@ Properties any node can have:
   put a tab at that tab's position, or add a pane beside its focused pane. Moves stay on the
   same machine, including between remote spaces. `panes()` exposes `movable`.
   Middle-clicking a pane header or grip closes that pane, including an unfocused pane.
-  Mouse Back and Forward traverse actual keyboard visits across tabs and spaces from terminals or the sidebar. Closed panes are skipped; visiting another pane clears Forward.
+  Mouse Back and Forward traverse actual keyboard visits across tabs and spaces from terminals or the sidebar. History survives app restarts in the saved view. Closed panes are skipped; visiting another pane clears Forward.
 - `floating`: blocks over this node (below).
 - `window_drag: true`: dragging the node moves the window, a double-click
   maximizes it. A mod's own control inside opts out by stopping the press:
