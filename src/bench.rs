@@ -4,6 +4,10 @@
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 pub static WINDOW: AtomicU64 = AtomicU64::new(0);
+pub static GROW_REQUEST: AtomicU64 = AtomicU64::new(0);
+pub static GROW_SOLVE: AtomicU64 = AtomicU64::new(0);
+pub static GROW_US: AtomicU64 = AtomicU64::new(0);
+pub static RESIZE: AtomicU64 = AtomicU64::new(0);
 pub static TERMINAL: AtomicU64 = AtomicU64::new(0);
 pub static GRID: AtomicU64 = AtomicU64::new(0);
 /// Terminal rows whose drawing was built again (the rest were kept).
@@ -74,7 +78,7 @@ pub fn start() {
             last = now;
             let _ = writeln!(
                 f,
-                r#"{{"t":{t},"scripts":{},"script_ms":{},"materialize":{},"materialize_ms":{},"window":{},"terminal":{},"grid":{},"rows":{},"window_ms":{},"frame_ms":{}}}"#,
+                r#"{{"t":{t},"scripts":{},"script_ms":{},"materialize":{},"materialize_ms":{},"window":{},"terminal":{},"grid":{},"rows":{},"window_ms":{},"frame_ms":{},"grow_requests":{},"grow_solves":{},"grow_ms":{},"resize_writes":{}}}"#,
                 d[0],
                 d[1] as f64 / 1000.0,
                 d[2],
@@ -84,7 +88,11 @@ pub fn start() {
                 GRID.swap(0, Relaxed),
                 ROWS.swap(0, Relaxed),
                 WINDOW_US.swap(0, Relaxed) as f64 / 1000.0,
-                FRAME_US.swap(0, Relaxed) as f64 / 1000.0
+                FRAME_US.swap(0, Relaxed) as f64 / 1000.0,
+                GROW_REQUEST.swap(0, Relaxed),
+                GROW_SOLVE.swap(0, Relaxed),
+                GROW_US.swap(0, Relaxed) as f64 / 1000.0,
+                RESIZE.swap(0, Relaxed)
             );
         }
     });

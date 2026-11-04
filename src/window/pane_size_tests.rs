@@ -124,3 +124,174 @@ fn hidden_tabs_follow(cx: &mut gpui::TestAppContext) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(dims(cx), fitted, "hidden tabs must have been sized as their panes draw them");
 }
+
+#[test]
+fn native_growth_fills_the_context_and_preserves_fixed_minimum_and_maximum_sizes() {
+    use super::pane_size::shares;
+    use crate::layout::{Axis, Node, Size};
+    let mut root = Node::container("root", Axis::Column, (0..5).map(|i| crate::model::pane(&i.to_string(), &i.to_string())).collect());
+    let grown = crate::focus_grow::derive(&root, "0", [2400.0, 1400.0], [10.0, 20.0]);
+    let sizes = shares(&grown.children().iter().collect::<Vec<_>>(), 1376.0, 1.0);
+    assert!((sizes.iter().sum::<f32>() + 24.0 - 1400.0).abs() < 0.01);
+    assert!(sizes.windows(2).all(|p| p[0] > p[1]));
+    root.children_mut().unwrap()[0].size = Some(Size::Px { px: 200.0 });
+    root.children_mut().unwrap()[1].min = Some(350.0);
+    root.children_mut().unwrap()[2].max = Some(100.0);
+    let grown = crate::focus_grow::derive(&root, "3", [2400.0, 1400.0], [10.0, 20.0]);
+    let sizes = shares(&grown.children().iter().collect::<Vec<_>>(), 1376.0, 1.0);
+    assert_eq!(sizes[0], 200.0);
+    assert!(sizes[1] >= 350.0);
+    assert!(sizes[2] <= 100.0);
+    assert!(sizes.iter().sum::<f32>() <= 1376.01);
+    assert_eq!(grown.find("0").unwrap().size, root.find("0").unwrap().size);
+}
+
+#[test]
+fn native_growth_preserves_contested_group_directionality_and_fills_every_branch() {
+    use crate::layout::{Axis, Node, Size};
+    fn weighted(mut node: Node, weight: f32) -> Node {
+        node.size = Some(Size::Weight { weight });
+        node
+    }
+    fn spans(root: &Node, width: f32, height: f32, result: &mut std::collections::HashMap<String, (f32, f32)>) {
+        let Some(axis) = root.axis() else { result.insert(root.id.clone(), (width, height)); return };
+        let children = root.children().iter().collect::<Vec<_>>();
+        let available = if axis == Axis::Row { width } else { height };
+        let gaps = 6.0 * children.len().saturating_sub(1) as f32;
+        let sizes = super::pane_size::shares(&children, available - gaps, 1.0);
+        assert!((sizes.iter().sum::<f32>() + gaps - available).abs() < 0.01);
+        for (child, span) in children.into_iter().zip(sizes) {
+            let (w, h) = if axis == Axis::Row { (span, height) } else { (width, span) };
+            spans(child, w, h, result);
+        }
+    }
+    let pane = |id, weight| weighted(crate::model::pane(id, id), weight);
+    let top = weighted(Node::container("top", Axis::Row, vec![pane("B", 54.0), pane("D", 92.0)]), 23.0);
+    let bottom = weighted(Node::container("bottom", Axis::Row, vec![pane("C", 76.0), pane("E", 70.0)]), 23.0);
+    let right = weighted(Node::container("right", Axis::Column, vec![top, bottom]), 147.0);
+    let root = Node::container("root", Axis::Row, vec![pane("A", 40.0), right]);
+    for height in [940.0, 980.0] {
+        for target in ["C", "E"] {
+            let grown = crate::focus_grow::derive(&root, target, [1880.0, height], [10.0, 20.0]);
+            let mut sizes = std::collections::HashMap::new();
+            spans(&grown, 1880.0, height, &mut sizes);
+            let other = if target == "C" { "E" } else { "C" };
+            assert!(sizes["D"].0 > sizes[other].0, "{target} at {height}: {sizes:?}");
+            assert_eq!(grown.panes().iter().map(|p| &p.id).collect::<Vec<_>>(), root.panes().iter().map(|p| &p.id).collect::<Vec<_>>());
+        }
+    }
+}
+
+#[test]
+fn focus_growth_uses_render_focus_without_writing_shared_layouts() {
+    in_own_process("focus_growth_render");
+}
+
+#[test]
+fn focus_growth_force_false_preserves_manual_resize() {
+    in_own_process("focus_growth_force_command");
+}
+
+#[gpui::test]
+fn focus_growth_force_command(cx: &mut gpui::TestAppContext) {
+    use serde_json::json;
+    if !running_alone("focus_growth_force_command") { return; }
+    let layout = json!({"id":"context","type":"block","content":{"tab":"active","pane":{"gap":6}}});
+    let (view, cx) = open_window(cx, "size-probe", "export default () => null;", layout);
+    view.update_in(cx, |this, window, cx| {
+        this.model = crate::model::Model::default();
+        let mut tab = super::Tab::new("tab", "", "a", "probe-a");
+        tab.root.split("a", super::Axis::Row, crate::model::pane("b", "probe-b"), "split1".into());
+        tab.root.split("b", super::Axis::Row, crate::model::pane("c", "probe-c"), "split2".into());
+        tab.focus("a");
+        this.model.add_space("space", "test", "/", tab);
+        this.person.focus_grow = true;
+        this.sync(window, cx);
+    });
+    for _ in 0..2 { cx.update(|window, cx| window.draw(cx).clear(cx)); }
+    view.update_in(cx, |this, window, cx| {
+        this.documents.entry(String::new()).or_default().available = true;
+        for (args, resumes) in [
+            (json!({"force":false}), false),
+            (json!({"force":true}), true),
+            (json!({"enabled":true,"force":false}), true),
+            (json!({"suspended":false,"force":false}), true),
+            (json!({"enabled":false,"force":true}), false),
+            (json!({"suspended":true,"force":true}), false),
+            (json!({}), false),
+        ] {
+            assert!(this.run_as("tab.focus_grow", json!({"enabled":true,"suspended":false}), false, window, cx).get("error").is_none());
+            this.grown_tab(this.model.active_tab().unwrap(), window).unwrap();
+            assert!(this.run_as("layout.resize", json!({"id":"b","weight":1.0}), false, window, cx).get("error").is_none());
+            let held = this.grown_tab(this.model.active_tab().unwrap(), window).unwrap();
+            let document = crate::mirror::Document::capture(&this.model, None);
+            let solves = this.growth.borrow().solves;
+            assert!(this.run_as("tab.focus_grow", args.clone(), false, window, cx).get("error").is_none());
+            let shown = this.grown_tab(this.model.active_tab().unwrap(), window).unwrap();
+            assert_eq!(this.growth.borrow().solves, solves + u64::from(resumes), "{args}");
+            if !resumes { assert!(std::rc::Rc::ptr_eq(&held, &shown), "{args}"); }
+            assert_eq!(crate::mirror::Document::capture(&this.model, None), document, "{args}");
+        }
+        let solves = this.growth.borrow().solves;
+        assert!(this.run_as("tab.focus_grow", json!({}), false, window, cx).get("error").is_none());
+        this.grown_tab(this.model.active_tab().unwrap(), window).unwrap();
+        assert_eq!(this.growth.borrow().solves, solves + 1);
+    });
+}
+
+#[gpui::test]
+fn focus_growth_render(cx: &mut gpui::TestAppContext) {
+    use serde_json::json;
+    if !running_alone("focus_growth_render") { return; }
+    let layout = json!({"id":"chrome","type":"row","children":[
+        {"id":"sidebar","type":"block","size":{"px":100},"content":{"mod":"size-probe"}},
+        {"id":"context","type":"block","content":{"tab":"active","pane":{"gap":6}}}
+    ]});
+    let (view, cx) = open_window(cx, "size-probe", "export default () => null;", layout);
+    view.update_in(cx, |this, window, cx| {
+        this.model = crate::model::Model::default();
+        let mut tab = super::Tab::new("tab", "", "a", "probe-a");
+        tab.root.split("a", super::Axis::Row, crate::model::pane("b", "probe-b"), "split1".into());
+        tab.root.split("b", super::Axis::Row, crate::model::pane("c", "probe-c"), "split2".into());
+        tab.focus("a");
+        this.model.add_space("space", "test", "/", tab);
+        this.sync(window, cx);
+    });
+    for _ in 0..2 { cx.update(|window, cx| window.draw(cx).clear(cx)); }
+    let before = view.update(cx, |this, _| crate::mirror::Document::capture(&this.model, None));
+    let sidebar = view.update(cx, |this, _| this.bounds.borrow()["sidebar"]);
+    for target in ["c", "b", "a"] {
+        view.update_in(cx, |this, window, cx| { this.terms[target].focus.focus(window, cx); cx.notify(); });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        view.update_in(cx, |this, window, cx| {
+            assert_eq!(this.model.active_tab().unwrap().focused_pane().as_deref(), Some(target));
+            let predicted = this.shown_size(this.model.active_tab().unwrap(), target, window).unwrap();
+            assert_eq!(predicted, this.terms[target].view.read(cx).dimensions());
+            assert_eq!(crate::mirror::Document::capture(&this.model, None), before);
+            assert_eq!(this.bounds.borrow()["sidebar"], sidebar);
+            let bounds = this.bounds.borrow();
+            let selected = bounds[target].size.width;
+            assert!(["a", "b", "c"].into_iter().filter(|id| *id != target).all(|id| selected > bounds[id].size.width));
+        });
+    }
+    view.update_in(cx, |this, window, cx| {
+        let sizes = this.growth.borrow().displayed("tab").unwrap();
+        this.run("tab.focus_grow", json!({"suspended":true}), window, cx);
+        this.run("tab.focus_grow", json!({"force":true}), window, cx);
+        this.grown_tab(this.model.active_tab().unwrap(), window);
+        assert_eq!(this.growth.borrow().displayed("tab").unwrap(), sizes);
+        this.run("tab.focus_grow", json!({"suspended":false}), window, cx);
+        this.begin_growth_resize("a");
+        this.model.tab_mut("tab").unwrap().root.find_mut("a").unwrap().size = Some(super::Span::Px { px: 200.0 });
+        this.hold_growth("a");
+        this.grown_tab(this.model.active_tab().unwrap(), window);
+        assert_eq!(this.growth.borrow().displayed("tab").unwrap().find("a").unwrap().size, Some(super::Span::Px { px: 200.0 }));
+        this.drag = Some(super::Drag { container: "tab".into(), index: 0, axis: super::Axis::Row });
+        let solves = this.growth.borrow().solves;
+        this.run("tab.focus_grow", json!({"force":true}), window, cx);
+        this.grown_tab(this.model.active_tab().unwrap(), window);
+        assert_eq!(this.growth.borrow().solves, solves);
+        this.drag = None;
+        this.hold_growth("a");
+    });
+}

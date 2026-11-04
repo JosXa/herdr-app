@@ -367,6 +367,7 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Person {
+    pub focus_grow: bool,
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
     pub zoom: f32,
     pub sounds: Sounds,
@@ -445,6 +446,7 @@ fn is_true(b: &bool) -> bool {
 impl Default for Person {
     fn default() -> Self {
         Person {
+            focus_grow: true,
             zoom: 1.0,
             sounds: Sounds::default(),
             core: None,

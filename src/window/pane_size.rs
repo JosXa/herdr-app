@@ -47,7 +47,7 @@ fn content_size(n: &Node, size: Size<Pixels>, focused: bool, zoom: f32) -> Size<
 }
 
 /// Flex shares after fixed siblings, gaps and min/max constraints.
-fn shares(children: &[&Node], available: f32, zoom: f32) -> Vec<f32> {
+pub(super) fn shares(children: &[&Node], available: f32, zoom: f32) -> Vec<f32> {
     let mut sizes = vec![0.0; children.len()];
     let mut pending = Vec::new();
     let mut left = available;
@@ -131,13 +131,53 @@ pub(super) enum HiddenFit {
 impl AppWindow {
     pub(super) fn initial_size(&self, root: &Node, pane: &str, window: &Window) -> Option<(u16, u16)> {
         let focused = root.path_to(pane)?.into_iter().collect();
-        self.displayed_size(root, root.panes().len(), pane, &focused, window)
+        let (area, cell) = self.growth_geometry(window)?;
+        let preference = self.model.active_tab().and_then(|t| self.growth.borrow().preferences.get(&t.id).cloned()).unwrap_or_default();
+        let grown = (self.person.focus_grow && preference.enabled && !preference.suspended).then(|| crate::focus_grow::derive(root, pane, area, cell));
+        self.displayed_size(grown.as_ref().unwrap_or(root), root.panes().len(), pane, &focused, window)
     }
 
     /// The grid `pane` gets when `tab` is the one shown.
     pub(super) fn shown_size(&self, tab: &Tab, pane: &str, window: &Window) -> Option<(u16, u16)> {
         let focused = tab.focused_pane().and_then(|f| tab.root.path_to(&f)).unwrap_or_default().into_iter().collect();
-        self.displayed_size(tab.shown(), tab.root.panes().len(), pane, &focused, window)
+        let grown = self.grown_tab(tab, window);
+        self.displayed_size(grown.as_deref().unwrap_or_else(|| tab.shown()), tab.root.panes().len(), pane, &focused, window)
+    }
+
+    fn growth_geometry(&self, window: &Window) -> Option<([f32; 2], [f32; 2])> {
+        let (context, area) = self.context_area()?;
+        let zoom = settings::zoom();
+        let (y, x) = padding(context);
+        let cell = crate::terminal::cell_size(window);
+        Some(([(f32::from(area.width) / zoom - 2.0 * x).max(0.0), (f32::from(area.height) / zoom - 2.0 * y).max(0.0)], [f32::from(cell.width) / zoom, f32::from(cell.height) / zoom]))
+    }
+
+    pub(super) fn grown_tab(&self, tab: &Tab, window: &Window) -> Option<Rc<Node>> {
+        let (area, cell) = self.growth_geometry(window)?;
+        let target = tab.focused_pane()?;
+        crate::bench::count(&crate::bench::GROW_REQUEST);
+        let _timed = crate::bench::timed(&crate::bench::GROW_US);
+        let mut growth = self.growth.borrow_mut();
+        let before = growth.solves;
+        let grown = growth.derive(&tab.id, tab.shown(), &target, area, cell, self.person.focus_grow && self.drag.is_none(), tab.zoomed.is_some());
+        if growth.solves != before { crate::bench::count(&crate::bench::GROW_SOLVE); }
+        Some(grown)
+    }
+
+    pub(super) fn hold_growth(&mut self, node: &str) {
+        if let Some(tab) = self.model.tab_of(node) && let Some(target) = tab.focused_pane() {
+            self.growth.borrow_mut().manual(&tab.id, &tab.root, &target);
+        }
+    }
+
+    pub(super) fn begin_growth_resize(&mut self, node: &str) {
+        let Some(tab) = self.model.tab_of(node) else { return };
+        let id = tab.id.clone();
+        let grown = self.growth.borrow().displayed(&id);
+        if let Some(grown) = grown && self.model.tab(&id).is_some_and(|t| t.zoomed.is_none()) {
+            self.model.tab_mut(&id).unwrap().root = (*grown).clone();
+        }
+        self.hold_growth(node);
     }
 
     /// `shown`: the tree on screen; `panes`: how many the tab has (its frame needs more than one, or `lone`).

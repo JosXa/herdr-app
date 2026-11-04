@@ -37,6 +37,8 @@ fn empty_root() -> Node {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct View {
+    #[serde(default)]
+    pub(crate) focus_grow: BTreeMap<String, crate::focus_grow::Preference>,
     #[serde(default, deserialize_with = "deserialize_focus_history")]
     pub(crate) focus_history: FocusHistory,
     active: Option<String>,
@@ -156,6 +158,7 @@ impl View {
     pub fn capture(model: &Model) -> Self {
         Self {
             focus_history: Default::default(),
+            focus_grow: Default::default(),
             active: model.active.clone(),
             recent: model.recent.clone(),
             spaces: model.spaces.iter().map(|s| (s.id.clone(), s.active.clone())).collect(),
@@ -278,6 +281,29 @@ mod tests {
         view.apply(&mut other);
         assert_eq!(other.tab("t").unwrap().zoomed.as_deref(), Some("p"));
         assert_eq!(other.tab("t").unwrap().settled, Some(12));
+    }
+    #[test]
+    fn growth_and_independent_screen_preferences_never_change_the_machine_document() {
+        let mut model = model();
+        model.split("p", Axis::Row, "q", "t2");
+        model.split("q", Axis::Column, "r", "t3");
+        let before = Document::capture(&model, None);
+        let mut first = crate::focus_grow::Growth::default();
+        let mut second = crate::focus_grow::Growth::default();
+        for target in ["p", "r", "q", "r", "q"] {
+            model.focus_pane(target);
+            first.derive("t", &model.tab("t").unwrap().root, target, [1880.0, 980.0], [10.0, 20.0], true, false);
+            assert_eq!(Document::capture(&model, None), before);
+        }
+        let other = second.derive("t", &model.tab("t").unwrap().root, "p", [1880.0, 980.0], [10.0, 20.0], true, false);
+        assert_ne!(first.displayed("t").unwrap(), other);
+        let mut view = View::capture(&model);
+        view.focus_grow.insert("t".into(), crate::focus_grow::Preference { enabled: false, suspended: true });
+        let saved: View = serde_json::from_str(&serde_json::to_string(&view).unwrap()).unwrap();
+        assert_eq!(saved.focus_grow, view.focus_grow);
+        assert!(View::capture(&model).focus_grow.is_empty());
+        saved.apply(&mut model);
+        assert_eq!(Document::capture(&model, None), before);
     }
     #[test]
     fn remote_roundtrip_qualifies_only_identity_not_mod_props() {
