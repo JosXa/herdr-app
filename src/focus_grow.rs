@@ -44,30 +44,42 @@ impl Growth {
         if zoomed { return Rc::new(root.clone()); }
         let preference = self.preferences.get(tab).cloned().unwrap_or_default();
         let active = enabled && preference.enabled && !preference.suspended && !zoomed;
+        let mut same_root = false;
+        let mut manual = false;
         if let Some(entry) = self.entries.get_mut(tab) {
-            let same_root = entry.input.root == *root;
+            same_root = entry.input.root == *root;
             if same_root && !active && !zoomed {
                 entry.active = false;
                 return entry.output.clone();
             }
             let same_geometry = same_root && entry.input.area == area && entry.input.cell == cell;
-            let manual = entry.manual_target.as_deref() == Some(target);
+            manual = entry.manual_target.as_deref() == Some(target);
             if same_geometry && ((!active && !zoomed) || (entry.active == active && entry.input.target == target) || manual) {
                 entry.active = active;
                 return entry.output.clone();
             }
         }
-        let manual = self.entries.get(tab).and_then(|entry| entry.manual_target.as_deref()).is_some_and(|t| t == target);
         let output = if active && !manual && root.panes().len() > 1 {
             self.solves += 1;
             derive(root, target, area, cell)
         } else { root.clone() };
         let output = Rc::new(output);
-        self.entries.insert(tab.to_owned(), Entry {
-            input: Input { root: root.clone(), target: target.to_owned(), area, cell }, output: output.clone(),
-            manual_target: manual.then(|| target.to_owned()),
-            active,
-        });
+        if let Some(entry) = self.entries.get_mut(tab) {
+            if !same_root { entry.input.root = root.clone(); }
+            entry.input.target.clear();
+            entry.input.target.push_str(target);
+            entry.input.area = area;
+            entry.input.cell = cell;
+            entry.output = output.clone();
+            if !manual { entry.manual_target = None; }
+            entry.active = active;
+        } else {
+            self.entries.insert(tab.to_owned(), Entry {
+                input: Input { root: root.clone(), target: target.to_owned(), area, cell }, output: output.clone(),
+                manual_target: None,
+                active,
+            });
+        }
         output
     }
 
@@ -94,23 +106,19 @@ impl Growth {
 pub fn derive(root: &Node, target: &str, area: [f32; 2], cell: [f32; 2]) -> Node {
     let mut output = root.clone();
     for _ in 0..6 {
-        let next = derive_once(&output, target, area, cell);
-        if next == output { break; }
-        output = next;
+        if !derive_once(&mut output, target, area, cell) { break; }
     }
     output
 }
 
-fn derive_once(root: &Node, target: &str, area: [f32; 2], cell: [f32; 2]) -> Node {
+fn derive_once(root: &mut Node, target: &str, area: [f32; 2], cell: [f32; 2]) -> bool {
     let size = [0, 1].map(|axis| (area[axis] / cell[axis].max(1.0)).floor().max(1.0) as i64);
     let minimum = [(size[0] / 8).clamp(20, 28), (size[1] / 6).clamp(6, 10)];
     let mut solver = solver::Solver::new(minimum);
     build(&mut solver, root, target, size, [0; 2], None, 0, cell);
-    if solver.focus == usize::MAX || solver.leaves.len() <= 1 { return root.clone(); }
+    if solver.focus == usize::MAX || solver.leaves.len() <= 1 { return false; }
     solver.solve();
-    let mut output = root.clone();
-    apply(&mut output, &solver, 0);
-    output
+    apply(root, &solver, 0)
 }
 
 fn build(solver: &mut solver::Solver, node: &Node, target: &str, size: [i64; 2], pos: [i64; 2], parent: Option<usize>, index: usize, cell: [f32; 2]) -> usize {
@@ -145,14 +153,20 @@ fn build(solver: &mut solver::Solver, node: &Node, target: &str, size: [i64; 2],
     id
 }
 
-fn apply(node: &mut Node, solver: &solver::Solver, id: usize) {
-    let Some(axis) = node.axis() else { return };
+fn apply(node: &mut Node, solver: &solver::Solver, id: usize) -> bool {
+    let Some(axis) = node.axis() else { return false };
     let axis = usize::from(axis == Axis::Column);
-    let Some(children) = node.children_mut() else { return };
+    let Some(children) = node.children_mut() else { return false };
+    let mut changed = false;
     for (child, &index) in children.iter_mut().filter(|n| !n.hidden).zip(&solver.nodes[id].children) {
-        if !matches!(child.size, Some(Size::Px { .. })) { child.size = Some(Size::Weight { weight: solver.nodes[index].size[axis] as f32 }); }
-        apply(child, solver, index);
+        if !matches!(child.size, Some(Size::Px { .. })) {
+            let size = Some(Size::Weight { weight: solver.nodes[index].size[axis] as f32 });
+            changed |= child.size != size;
+            child.size = size;
+        }
+        changed |= apply(child, solver, index);
     }
+    changed
 }
 
 #[cfg(test)]
