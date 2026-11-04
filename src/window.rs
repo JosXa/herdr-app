@@ -3934,7 +3934,7 @@ impl AppWindow {
         let head = div().flex_none().h(settings::z(pane_size::header_height(h))).w_full().flex()
             .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
-                this.dispatch("pane.close", &json!({ "pane": pane }), true, window, cx);
+                this.run("pane.close", json!({ "pane": pane }), window, cx);
             }))
             .child(self.render_slot(&format!("{}#frame", n.id), cx));
         if h.hover() {
@@ -5306,6 +5306,15 @@ mod tests {
                 view.update(cx, |this, _| assert!(this.pane_drag.is_some()));
                 cx.simulate_mouse_up(at, MouseButton::Left, Default::default());
             }
+            view.update(cx, |this, _| this.documents.entry(String::new()).or_default().available = false);
+            cx.simulate_mouse_down(at, MouseButton::Middle, Default::default());
+            cx.simulate_mouse_up(at, MouseButton::Middle, Default::default());
+            view.update(cx, |this, _| {
+                assert_eq!(this.model.address_of("clicked").as_deref(), Some("t1"));
+                assert_eq!(this.model.address_of("neighbor").as_deref(), Some("t2"));
+                assert_eq!(this.model.active_tab().unwrap().root.panes().len(), 2);
+                this.documents.entry(String::new()).or_default().available = true;
+            });
             cx.simulate_mouse_down(at, MouseButton::Middle, Default::default());
             cx.simulate_mouse_up(at, MouseButton::Middle, Default::default());
             cx.run_until_parked();

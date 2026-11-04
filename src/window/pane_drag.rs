@@ -64,7 +64,7 @@ impl AppWindow {
             .cursor(if dragging { CursorStyle::ClosedHand } else { CursorStyle::OpenHand })
             .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
-                this.dispatch("pane.close", &json!({ "pane": close_pane }), true, window, cx);
+                this.run("pane.close", json!({ "pane": close_pane }), window, cx);
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                 this.pane_press(&pane, ev.position, cx);
