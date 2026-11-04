@@ -795,6 +795,33 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
 - It follows what runs in the terminal now (lazygit, nvim), else what it
   started with.
 
+## Completed terminal frames
+
+Cooperating TUIs can keep their last completed frame visible while the grid's row
+count changes. A column-count change clears retention so live text reflow and
+input coordinates stay aligned. A fresh matching completion at the new width
+can enable retention for later row-count changes.
+Emit `ESC ]777;herdr-frame;TOKEN;COLS;ROWS;FRAME_ID BEL` synchronously on the same
+PTY stdout after the completed frame's bytes, including its synchronized-output
+reset. Use the accepted renderer dimensions. `TOKEN` is a fresh 32-character
+lowercase hexadecimal token per renderer instance. `FRAME_ID` is a nonnegative
+u64 that increases within that instance. A renderer restart uses a new token,
+so its frame IDs may restart at zero.
+
+On disposal, unsubscribe the frame producer before synchronously emitting
+`ESC ]777;herdr-frame;TOKEN;end BEL`. Send no later frames for that token.
+Only a newer completed frame matching the applied grid enables retention.
+Disposal, an observed alternate-screen exit, hidden fitting or cell/DPI changes
+clear it. A one-second missing-completion timeout also disables retention until
+a fresh matching completion arrives. A native reattach starts inactive and
+learns from the ordered stream again. Replayed markers identify historical
+checkpoints. Freshness requires a newly produced frame. Ordinary programs resize and render
+live without opting in. Native VT and PTY resizes remain immediate.
+
+Retained text and images keep their cell size, align to the pane bottom and
+clip at its bounds. Input continues against the live grid, so mouse targets,
+selection and IME can lag the retained content until completion or timeout.
+
 ## Mods: `mods/<name>/`
 
 ```

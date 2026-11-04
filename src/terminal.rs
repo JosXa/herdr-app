@@ -85,6 +85,8 @@ struct Grid {
     painted: Vec<(Rc<Vec<vt::Cell>>, Vec<RowOp>, Option<usize>)>,
     /// Font size, cell size, font, loaded fonts and ligature setting used to draw.
     painted_with: (u32, Size<Pixels>, String, u64, bool),
+    repaint_timer: Option<Task<()>>,
+    repaint_deadline: Option<Instant>,
 }
 
 pub struct TerminalView {
@@ -175,7 +177,9 @@ impl Grid {
     }
 
     /// Sizes the screen to `cols` x `rows` of `cell` at `scale`; the program hears of a change.
-    fn fit(&mut self, cols: u16, rows: u16, cell: Size<Pixels>, scale: f32) {
+    fn fit(&mut self, cols: u16, rows: u16, cell: Size<Pixels>, scale: f32, hidden: bool) {
+        let metrics_changed = cell != self.cell || scale != self.scale;
+        if metrics_changed || hidden { self.cancel_repaint(); }
         self.cell = cell;
         self.scale = scale;
         let dev = device_cell(cell, scale);
@@ -193,6 +197,12 @@ impl Grid {
             let replies = self.vt.take_replies();
             self.core.automatic_input(chan, &replies);
         }
+    }
+
+    fn cancel_repaint(&mut self) {
+        self.vt.cancel_repaint();
+        self.repaint_timer = None;
+        self.repaint_deadline = None;
     }
 }
 
@@ -253,6 +263,8 @@ impl TerminalView {
                 track: None,
                 painted: Vec::new(),
                 painted_with: (0, Size::default(), String::new(), 0, false),
+                repaint_timer: None,
+                repaint_deadline: None,
             })),
             focus: cx.focus_handle(),
             was_focused: false,
@@ -293,6 +305,7 @@ impl TerminalView {
     fn connect(&mut self, core: Arc<Core>, announce_end: bool, cx: &mut Context<Self>) {
         let (cols, rows, facts) = {
             let mut g = self.grid.borrow_mut();
+            g.cancel_repaint();
             let (cols, rows) = (g.vt.cols, g.vt.rows);
             // The core repaints the whole screen (and history) on attach.
             let cell = device_cell(g.cell, g.scale);
@@ -424,7 +437,8 @@ impl TerminalView {
     }
 
     pub fn detach(&self) {
-        let g = self.grid.borrow();
+        let mut g = self.grid.borrow_mut();
+        g.cancel_repaint();
         if let Some(ch) = g.channel {
             g.core.detach(ch);
         }
@@ -433,6 +447,7 @@ impl TerminalView {
     /// Feeds relayed bytes in; returns false once the stream is over.
     fn ingest(&mut self, batch: Vec<Stream>, cx: &mut Context<Self>) -> bool {
         let mut open = true;
+        let mut repaint_completed = false;
         let title = {
             let mut g = self.grid.borrow_mut();
             for item in batch {
@@ -440,6 +455,7 @@ impl TerminalView {
                     Stream::Data(bytes) => {
                         g.vt.allow_clipboard_write(crate::settings::get().clipboard_write);
                         g.vt.write(&bytes);
+                        repaint_completed |= g.vt.take_repaint_complete();
                         let [clipboard, primary] = g.vt.take_clipboard();
                         if let Some(text) = clipboard {
                             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -458,11 +474,13 @@ impl TerminalView {
                         }
                     }
                     Stream::Closed(why) => {
+                        g.cancel_repaint();
                         open = false;
                         g.channel = None;
                         self.ended = Some(why.get("reason").and_then(|r| r.as_str()).unwrap_or("ended").to_owned());
                     }
                     Stream::Lost => {
+                        g.cancel_repaint();
                         g.channel = None;
                         self.lost = true;
                         cx.notify();
@@ -482,7 +500,7 @@ impl TerminalView {
         // Output in a terminal nobody sees doesn't redraw the window; it's
         // drawn fresh when shown again. Nor does output that changed nothing
         // on screen (an agent spinning its title).
-        if self.shown_in.get() == FRAME.load(Ordering::Relaxed) && self.grid.borrow_mut().vt.shows_change() {
+        if self.shown_in.get() == FRAME.load(Ordering::Relaxed) && (repaint_completed || self.grid.borrow_mut().vt.shows_change()) {
             self.redraw_soon(cx);
         }
         open
@@ -521,7 +539,28 @@ impl TerminalView {
 
     /// Sizes a terminal that isn't on screen as its pane would be (`AppWindow::fit_hidden_tabs`).
     pub fn fit(&self, cols: u16, rows: u16, cell: Size<Pixels>, scale: f32) {
-        self.grid.borrow_mut().fit(cols, rows, cell, scale);
+        self.grid.borrow_mut().fit(cols, rows, cell, scale, true);
+    }
+
+    fn arm_repaint_timer(&mut self, cx: &mut Context<Self>) {
+        let mut grid = self.grid.borrow_mut();
+        let deadline = grid.vt.repaint_deadline();
+        if deadline == grid.repaint_deadline { return; }
+        grid.repaint_timer = None;
+        grid.repaint_deadline = deadline;
+        let Some(deadline) = deadline else { return };
+        grid.repaint_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(deadline.saturating_duration_since(Instant::now())).await;
+            let _ = this.update(cx, |this, cx| {
+                {
+                    let mut grid = this.grid.borrow_mut();
+                    grid.repaint_deadline = None;
+                    grid.vt.expire_repaint(Instant::now());
+                }
+                this.arm_repaint_timer(cx);
+                cx.notify();
+            });
+        }));
     }
 
     pub fn on_screen_this_frame(&self) -> bool {
@@ -1541,6 +1580,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
     let mut g = grid.borrow_mut();
     let cell = g.cell;
     let (pad_x, pad_y) = pad();
+    let frame = g.vt.frame();
     // Rows rarely fill the height exactly: split what's left above and below.
     let spare = (f32::from(bounds.size.height) - 2.0 * pad_y - f32::from(cell.height) * g.vt.rows as f32).max(0.0);
     let scale = window.scale_factor();
@@ -1548,7 +1588,9 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
     let origin = bounds.origin + point(px(pad_x), px(pad_y + (spare / 2.0).floor()));
     let origin = point(snap(origin.x), snap(origin.y));
     g.origin = origin;
-    let frame = g.vt.frame();
+    let origin = if g.vt.repaint_frozen() {
+        point(origin.x, snap(bounds.origin.y + bounds.size.height - px(pad_y) - cell.height * frame.rows.len() as f32))
+    } else { origin };
     let placements = g.vt.placements();
     let mut images: Vec<(bool, Bounds<Pixels>, Arc<RenderImage>)> = Vec::new();
     let mut keep = std::collections::HashSet::new();
@@ -1847,6 +1889,7 @@ impl Render for TerminalView {
         self.grid.borrow_mut().link_spans = spans.unwrap_or_default();
         let grid = self.grid.clone();
         let grid_paint = self.grid.clone();
+        let resize_view = cx.entity().downgrade();
         let selection_view = cx.entity().downgrade();
         let (input_focus, input_view) = (self.focus.clone(), cx.entity());
         let ended = self.ended.clone().or_else(|| self.lost.then(|| "reconnecting to core…".to_owned()));
@@ -1965,12 +2008,17 @@ impl Render for TerminalView {
             }))
             .child(
                 canvas(
-                    move |bounds, window, _cx| {
+                    move |bounds, window, cx| {
                         let (cols, rows) = grid_size(bounds.size, cell);
-                        grid.borrow_mut().fit(cols, rows, cell, window.scale_factor());
+                        grid.borrow_mut().fit(cols, rows, cell, window.scale_factor(), false);
+                        let _ = resize_view.update(cx, |this, cx| this.arm_repaint_timer(cx));
                     },
                     move |bounds, _, window, cx| {
-                        paint_grid(bounds, &grid_paint, focused, window, cx);
+                        if grid_paint.borrow().vt.repaint_frozen() {
+                            window.with_content_mask(Some(ContentMask { bounds }), |window| paint_grid(bounds, &grid_paint, focused, window, cx));
+                        } else {
+                            paint_grid(bounds, &grid_paint, focused, window, cx);
+                        }
                         let view = selection_view.clone();
                         window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                             if phase == DispatchPhase::Capture {

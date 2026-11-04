@@ -7,6 +7,7 @@ mod control;
 mod core_bin;
 mod files;
 mod focus_grow;
+mod repaint;
 mod hc;
 mod keys;
 mod layout;
