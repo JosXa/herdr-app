@@ -53,6 +53,7 @@ impl AppWindow {
         let dragging = self.pane_drag.as_ref().is_some_and(|d| d.pane == pane);
         if self.pane_grip_hover.as_deref() != Some(pane) && !dragging { return None; }
         let pane = pane.to_owned();
+        let close_pane = pane.clone();
         Some(div().id(SharedString::from(format!("grip-{pane}")))
             .absolute().top(settings::z((row - 18.) / 2.)).left(relative(0.5)).ml(-settings::z(14.))
             .w(settings::z(28.)).h(settings::z(18.)).rounded(settings::z(4.))
@@ -61,6 +62,10 @@ impl AppWindow {
             .flex().flex_col().items_center().justify_center().gap(settings::z(3.)).occlude()
             .group("pane-grip")
             .cursor(if dragging { CursorStyle::ClosedHand } else { CursorStyle::OpenHand })
+            .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.dispatch("pane.close", &json!({ "pane": close_pane }), true, window, cx);
+            }))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                 this.pane_press(&pane, ev.position, cx);
                 cx.stop_propagation();

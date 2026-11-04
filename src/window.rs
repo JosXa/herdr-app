@@ -3930,7 +3930,12 @@ impl AppWindow {
         el = shadow(el, f.shadow.as_deref());
         let body = div().flex_1().min_h_0().flex().child(inner);
         let Some(h) = &f.header else { return el.child(body).into_any_element() };
+        let pane = n.id.clone();
         let head = div().flex_none().h(settings::z(pane_size::header_height(h))).w_full().flex()
+            .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.dispatch("pane.close", &json!({ "pane": pane }), true, window, cx);
+            }))
             .child(self.render_slot(&format!("{}#frame", n.id), cx));
         if h.hover() {
             let head = head.absolute().left_0().right_0().opacity(0.).group_hover(group, |s| s.opacity(1.));
@@ -5262,6 +5267,55 @@ mod tests {
     #[test]
     fn pane_ring_follows_keyboard_focus() {
         in_own_process("pane_ring_focus");
+    }
+
+    #[test]
+    fn middle_click_closes_only_the_clicked_header_or_grip() {
+        in_own_process("middle_header_close");
+    }
+
+    #[gpui::test]
+    fn middle_header_close(cx: &mut gpui::TestAppContext) {
+        use gpui::{MouseButton, point, px};
+        use serde_json::json;
+        if !running_alone("middle_header_close") { return; }
+        let (view, cx) = open_window(cx, "empty-header", "import { View, div } from 'gpui-kit'; export default class Header extends View { render() { return div().size_full().child('header'); } }", json!({
+            "id": "main", "type": "block", "content": { "tab": "active", "pane": {
+                "lone": true, "header": { "content": { "mod": "empty-header" }, "height": 30 }
+            }}
+        }));
+        for grip in [false, true] {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.model = Default::default();
+                this.model.add_space("space", "space", "", crate::model::Tab::new("tab", "tab", "clicked", "t1"));
+                this.model.split("clicked", crate::layout::Axis::Row, "neighbor", "t2");
+                this.sync(window, cx);
+                cx.notify();
+            }));
+            cx.run_until_parked();
+            let bounds = view.update(cx, |this, _| this.bounds.borrow()["clicked"]);
+            let at = point(bounds.origin.x + if grip { bounds.size.width / 2. } else { px(10.) }, bounds.origin.y + px(10.));
+            cx.simulate_mouse_move(at, None, Default::default());
+            cx.run_until_parked();
+            view.update(cx, |this, _| {
+                assert_eq!(this.model.focused_pane().as_deref(), Some("neighbor"));
+                if grip { assert_eq!(this.pane_grip_hover.as_deref(), Some("clicked")); }
+            });
+            if grip {
+                cx.simulate_mouse_down(at, MouseButton::Left, Default::default());
+                view.update(cx, |this, _| assert!(this.pane_drag.is_some()));
+                cx.simulate_mouse_up(at, MouseButton::Left, Default::default());
+            }
+            cx.simulate_mouse_down(at, MouseButton::Middle, Default::default());
+            cx.simulate_mouse_up(at, MouseButton::Middle, Default::default());
+            cx.run_until_parked();
+            view.update(cx, |this, _| {
+                assert!(this.model.tab_of("clicked").is_none(), "grip={grip}");
+                assert_eq!(this.model.address_of("neighbor").as_deref(), Some("t2"));
+                assert_eq!(this.model.focused_pane().as_deref(), Some("neighbor"));
+                assert_eq!(this.model.active_tab().unwrap().root.panes().len(), 1);
+            });
+        }
     }
 
     #[gpui::test]

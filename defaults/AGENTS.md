@@ -244,6 +244,7 @@ Properties any node can have:
   another pane cancels. Zoomed tabs and one-pane tabs don't drag. The grip appears
   on top-edge hover, regardless of the header's position or presence. Only the grip
   starts dragging; header mods don't need drag handlers. `panes()` exposes `movable`.
+  Middle-clicking a pane header or grip closes that pane, including an unfocused pane.
 - `floating`: blocks over this node (below).
 - `window_drag: true`: dragging the node moves the window, a double-click
   maximizes it. A mod's own control inside opts out by stopping the press:
