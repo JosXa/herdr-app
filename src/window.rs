@@ -1739,20 +1739,15 @@ impl AppWindow {
         self.write_where(cx);
     }
 
-    /// Tells the core where each terminal lives, in words: the `where` label,
-    /// `<space> / <tab>`, which hc shows in its picker and `ls`.
-    /// Sub-agents get their parent's. The ids (`herdr.space`,
-    /// `herdr.tab`) are what the app groups by; only this follows renames
-    /// and moves. Written only when it changes.
     fn write_where(&mut self, cx: &mut Context<Self>) {
         let m = &self.model;
         let home = home();
-        let mut want: HashMap<String, String> = HashMap::new();
+        let mut want: HashMap<String, Value> = HashMap::new();
         for p in &m.spaces {
             let name = m.space_name(p, &home);
             for c in &p.tabs {
                 for a in model::addresses(&c.root) {
-                    want.insert(a, format!("{name} / {}", Model::tab_name(p, c)));
+                    want.insert(a, json!({"where": format!("{name} / {}", Model::tab_name(p, c)), "herdr.space": crate::mirror::local(&p.id, p.machine.as_deref()), "herdr.tab": crate::mirror::local(&c.id, p.machine.as_deref())}));
                 }
             }
         }
@@ -1764,14 +1759,15 @@ impl AppWindow {
             for _ in 0..32 {
                 let Some(p) = self.live.get(&cur).and_then(|r| r.get("parent")).and_then(Value::as_str) else { break };
                 if let Some(place) = want.get(p).cloned() {
-                    want.insert(addr.clone(), place);
+                    want.insert(addr.clone(), json!({"where": place["where"]}));
                     break;
                 }
                 cur = p.to_owned();
             }
         }
         self.written_where.retain(|a, _| self.live.contains_key(a));
-        for (addr, place) in want {
+        for (addr, labels) in want {
+            let place = labels.to_string();
             if self.written_where.get(&addr) == Some(&place) || !self.live.contains_key(&addr) {
                 continue;
             }
@@ -1780,7 +1776,7 @@ impl AppWindow {
             self.written_where.insert(addr.clone(), place.clone());
             let core = self.core.clone();
             cx.spawn(async move |this, cx| {
-                let params = json!({ "terminal": addr, "labels": { "where": place } });
+                let params = json!({ "terminal": addr, "labels": labels });
                 let Err(e) = cx.background_executor().spawn(async move { core.call("terminal.label", params) }).await else { return };
                 tracing::warn!("where label for {addr}: {e:#}");
                 let _ = this.update(cx, |this, _| {
@@ -2753,7 +2749,7 @@ impl AppWindow {
             if !args.is_object() { args = json!({}); }
             args["machine"] = json!(machine);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.split" | "pane.close" | "pane.swap" | "terminal.keep" | "terminal.park") {
+        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.move" | "pane.split" | "pane.close" | "pane.swap" | "terminal.keep" | "terminal.park") {
             let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k));
             let target = node.and_then(|id| self.model.space(id).or_else(|| self.model.space_of(id))).or_else(|| self.model.active_space());
             let machine = if name == "space.new" { Self::arg(&args, "machine") }
@@ -2879,13 +2875,24 @@ impl AppWindow {
                 c.name = name.trim().to_owned();
             }
             "tab.move" => {
-                let (Some(id), Some(i)) = (Self::arg(a, "id"), a.get("index").and_then(Value::as_u64)) else { return self.fail("tab.move needs id and index") };
-                let Some(pid) = self.model.space_of(id).map(|p| p.id.clone()) else { return self.fail(format!("no tab {id:?}")) };
-                let p = self.model.space_mut(&pid).unwrap();
-                let from = p.tabs.iter().position(|c| c.id == id).unwrap();
-                let c = p.tabs.remove(from);
-                let to = (i as usize).saturating_sub(1).min(p.tabs.len());
-                p.tabs.insert(to, c);
+                let Some(id) = Self::arg(a, "id") else { return self.fail("tab.move needs id") };
+                let destination = Self::owned(a, "space").or_else(|| self.model.space_of(id).map(|p| p.id.clone()));
+                let Some(destination) = destination else { return self.fail("no such tab or space") };
+                if !self.model.move_tab(id, &destination, a.get("index").and_then(Value::as_u64).map(|i| i as usize)) { return self.fail("tab move needs a tab and space on the same machine"); }
+                self.write_where(cx);
+            }
+            "pane.move" => {
+                let Some(pane) = Self::arg(a, "pane") else { return self.fail("pane.move needs pane") };
+                let edge = match Self::arg(a, "edge") {
+                    None => None,
+                    Some("left") => Some(crate::layout::Edge::Left),
+                    Some("right") => Some(crate::layout::Edge::Right),
+                    Some("top") => Some(crate::layout::Edge::Top),
+                    Some("bottom") => Some(crate::layout::Edge::Bottom),
+                    _ => return self.fail("edge must be left, right, top or bottom"),
+                };
+                if !self.model.move_pane_to(pane, Self::arg(a, "space"), Self::arg(a, "tab"), Self::arg(a, "target"), edge) { return self.fail("pane move needs valid targets on the same machine"); }
+                self.write_where(cx);
             }
             "tab.settle" | "tab.unsettle" => {
                 let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab") };
@@ -3647,6 +3654,8 @@ impl AppWindow {
 
     fn handle(&mut self, req: Request, window: &mut Window, cx: &mut Context<Self>) {
         match req {
+            Request::BeginDrag { kind, id, event } => { self.begin_mod_drag(&kind, &id, &event, cx); }
+            Request::DragTarget { kind, id, event } => { self.mod_drag_target(&kind, &id, &event, cx); }
             Request::Run { name, args } => self.run(&name, args, window, cx),
             Request::OpenOverlay { id, spec } => self.open_overlay(id, spec, window, cx),
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),
@@ -5270,6 +5279,112 @@ mod tests {
     }
 
     #[test]
+    fn drag_bridge_moves_tabs_and_lone_panes_and_cancels_without_mutation() {
+        in_own_process("transfer_drag_bridge");
+    }
+
+    #[gpui::test]
+    fn transfer_drag_bridge(cx: &mut gpui::TestAppContext) {
+        use gpui::{MouseButton, point, px};
+        use serde_json::json;
+        if !running_alone("transfer_drag_bridge") { return; }
+        let (view, cx) = open_window(cx, "drag-test", r#"
+            import { View, div } from 'gpui-kit';
+            import { beginDrag, dragTarget } from 'herdr';
+            export default class Drag extends View {
+                render() { return div().size_full().flex().flex_col()
+                    .child(div().h(40).child('tab').on_mouse_down('left', e => beginDrag('tab', 'tab', e)))
+                    .child(div().h(40).child('destination').on_mouse_move(e => dragTarget('space', 'target', e)))
+                    .child(div().h(40).child('pane').on_mouse_down('left', e => beginDrag('pane', 'pane', e)));
+                }
+            }
+        "#, json!({"id":"main","type":"block","content":{"mod":"drag-test"}}));
+        let reset = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.model = Default::default();
+                this.model.add_space("source", "source", "", crate::model::Tab::new("tab", "work", "pane", "terminal"));
+                this.model.add_space("target", "target", "", crate::model::Tab::new("other", "other", "other-pane", "other-terminal"));
+                this.documents.entry(String::new()).or_default().available = true;
+                this.sync(window, cx);
+                this.focus.focus(window, cx);
+                cx.notify();
+            }));
+            cx.run_until_parked();
+        };
+        reset(cx);
+        let origin = view.update(cx, |this, _| this.bounds.borrow()["main"].origin);
+        let at = |y| origin + point(px(20.), px(y));
+        cx.simulate_mouse_down(at(20.), MouseButton::Left, Default::default());
+        cx.run_until_parked();
+        view.update(cx, |this, _| assert!(this.pane_drag.is_some()));
+        cx.simulate_mouse_move(at(60.), Some(MouseButton::Left), Default::default());
+        cx.run_until_parked();
+        cx.simulate_mouse_up(at(60.), MouseButton::Left, Default::default());
+        cx.run_until_parked();
+        view.update(cx, |this, _| {
+            assert_eq!(this.model.space_of("tab").unwrap().id, "target");
+            assert!(this.model.space("source").is_none());
+            assert_eq!(this.model.address_of("pane").as_deref(), Some("terminal"));
+            assert_eq!(this.model.focused_pane().as_deref(), Some("pane"));
+        });
+        reset(cx);
+        cx.simulate_mouse_down(at(100.), MouseButton::Left, Default::default());
+        cx.run_until_parked();
+        cx.simulate_mouse_move(at(60.), Some(MouseButton::Left), Default::default());
+        cx.run_until_parked();
+        cx.simulate_mouse_up(at(60.), MouseButton::Left, Default::default());
+        cx.run_until_parked();
+        view.update(cx, |this, _| {
+            assert_eq!(this.model.space_of("pane").unwrap().id, "target");
+            assert!(this.model.tab("tab").is_none());
+            assert_eq!(this.model.address_of("pane").as_deref(), Some("terminal"));
+        });
+        for cancel in ["escape", "outside", "release", "unavailable", "lost-button"] {
+            reset(cx);
+            cx.simulate_mouse_down(at(20.), MouseButton::Left, Default::default());
+            cx.run_until_parked();
+            if cancel != "release" {
+                cx.simulate_mouse_move(at(60.), Some(MouseButton::Left), Default::default());
+                cx.run_until_parked();
+            }
+            match cancel {
+                "escape" => { cx.simulate_keystrokes("escape"); },
+                "outside" => { cx.simulate_mouse_move(at(200.), Some(MouseButton::Left), Default::default()); },
+                "lost-button" => { cx.simulate_mouse_move(at(60.), None, Default::default()); },
+                "unavailable" => { view.update(cx, |this, _| this.documents.get_mut("").unwrap().available = false); },
+                _ => {}
+            }
+            let release = match cancel { "outside" => 200., "release" => 20., _ => 60. };
+            cx.simulate_mouse_up(at(release), MouseButton::Left, Default::default());
+            cx.run_until_parked();
+            view.update(cx, |this, _| {
+                assert_eq!(this.model.space_of("tab").unwrap().id, "source", "{cancel}");
+                assert!(this.pane_drag.is_none());
+            });
+        }
+        cx.update(|_, cx| view.update(cx, |this, cx| {
+            for machine in [None, Some("vps")] {
+                let mut model = crate::model::Model::default();
+                model.add_space("source", "source", "", crate::model::Tab::new("tab", "work", "pane", "terminal"));
+                model.add_space("target", "target", "", crate::model::Tab::new("other", "other", "other-pane", "other-terminal"));
+                this.model = Default::default();
+                crate::mirror::Document::capture(&model, None).replace(&mut this.model, machine);
+                let pane = crate::mirror::qualify("pane", machine);
+                let space = crate::mirror::qualify("target", machine);
+                assert!(this.model.move_pane_to(&pane, Some(&space), None, None, None));
+                let terminal = crate::mirror::qualify("terminal", machine);
+                this.live.insert(terminal.clone(), json!({}));
+                this.write_where(cx);
+                let labels: serde_json::Value = serde_json::from_str(&this.written_where[&terminal]).unwrap();
+                let tab = this.model.tab_of(&pane).unwrap();
+                assert_eq!(labels["herdr.space"], "target");
+                assert_eq!(labels["herdr.tab"], crate::mirror::local(&tab.id, machine));
+                assert!(labels["where"].as_str().unwrap().starts_with("target / "));
+            }
+        }));
+    }
+
+    #[test]
     fn middle_click_closes_only_the_clicked_header_or_grip() {
         in_own_process("middle_header_close");
     }
@@ -5289,6 +5404,7 @@ mod tests {
                 this.model = Default::default();
                 this.model.add_space("space", "space", "", crate::model::Tab::new("tab", "tab", "clicked", "t1"));
                 this.model.split("clicked", crate::layout::Axis::Row, "neighbor", "t2");
+                this.documents.entry(String::new()).or_default().available = true;
                 this.sync(window, cx);
                 cx.notify();
             }));

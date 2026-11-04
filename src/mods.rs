@@ -387,6 +387,8 @@ fn scan_dir(root: &Path, prefix: &str) -> Vec<Found> {
 
 /// What mods ask of the window.
 pub enum Request {
+    BeginDrag { kind: String, id: String, event: Value },
+    DragTarget { kind: String, id: String, event: Value },
     Run { name: String, args: Value },
     OpenOverlay { id: String, spec: Value },
     CloseOverlay { id: String },
@@ -888,6 +890,14 @@ fn module(inst: Instance, copy: u64) -> HostModule {
     COMMANDS.with(|c| c.borrow_mut().push((copy, inst.name.clone(), cmd_tx)));
     HostModule::new("herdr")
         .declarations(DECLARATIONS)
+        .function("beginDrag", |a| {
+            request(Request::BeginDrag { kind: a.string(0)?.into(), id: a.string(1)?.into(), event: from_host(a.value(2)?) });
+            Ok(HostValue::Null)
+        })
+        .function("dragTarget", |a| {
+            request(Request::DragTarget { kind: a.string(0)?.into(), id: a.string(1)?.into(), event: from_host(a.value(2)?) });
+            Ok(HostValue::Null)
+        })
         .async_function("exec", |a| {
             let command = a.string(0)?.to_owned();
             Ok(exec_future(command, strings(a.get(1)), opt_str(a.get(2), "cwd"), opt_str(a.get(2), "on")))

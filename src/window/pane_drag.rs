@@ -3,11 +3,13 @@ use super::*;
 use crate::layout::Edge;
 
 pub(super) struct PaneDrag {
+    whole_tab: bool,
     pane: String,
     tab: String,
     down: Point<Pixels>,
     moving: bool,
     target: Option<(String, Option<Edge>)>,
+    mod_target: Option<(String, String, Bounds<Pixels>)>,
 }
 
 /// The outer quarter of a pane chooses its nearest edge; the middle swaps.
@@ -35,9 +37,32 @@ fn inherited_movable(root: &Node, id: &str) -> Option<bool> {
 }
 
 impl AppWindow {
+    pub(super) fn begin_mod_drag(&mut self, kind: &str, id: &str, event: &Value, cx: &mut Context<Self>) {
+        let Some(at) = event_point(event) else { return };
+        if event["button"].as_str() != Some("left") { return; }
+        if kind == "pane" {
+            self.pane_press(id, at, cx);
+        } else if kind == "tab" && self.model.tab(id).is_some()
+            && self.require_document(self.model.space_of(id).and_then(|s| s.machine.as_deref())).is_ok() {
+            self.pane_drag = Some(PaneDrag { whole_tab: true, pane: id.into(), tab: id.into(), down: at, moving: false, target: None, mod_target: None });
+            cx.notify();
+        }
+    }
+
+    pub(super) fn mod_drag_target(&mut self, kind: &str, id: &str, event: &Value, cx: &mut Context<Self>) {
+        let Some(drag) = self.pane_drag.as_ref() else { return };
+        let source = self.model.space_of(&drag.pane);
+        let target = if kind == "space" { self.model.space(id) } else if matches!(kind, "tab" | "pane") { self.model.space_of(id) } else { None };
+        if source.zip(target).is_none_or(|(a, b)| a.machine != b.machine) { return; }
+        if kind == "pane" && event_point(event).and_then(|at| self.pane_target(at)).is_some_and(|(pane, _)| pane == id) { return; }
+        let Some(bounds) = event_bounds(event) else { return };
+        self.pane_drag.as_mut().unwrap().mod_target = Some((kind.into(), id.into(), bounds));
+        cx.notify();
+    }
+
     pub(super) fn pane_movable(&self, pane: &str) -> bool {
-        let Some(tab) = self.model.active_tab() else { return false };
-        if tab.zoomed.is_some() || tab.root.panes().len() < 2 || !tab.root.find(pane).is_some_and(Node::is_pane) {
+        let Some(tab) = self.model.tab_of(pane) else { return false };
+        if !tab.root.find(pane).is_some_and(Node::is_pane) || self.require_document(self.model.space_of(pane).and_then(|s| s.machine.as_deref())).is_err() {
             return false;
         }
         let owner = self.chrome.visible_blocks().into_iter().find(|n| matches!(n.content(), Some(Content::Context { .. })));
@@ -95,7 +120,8 @@ impl AppWindow {
     pub(super) fn pane_press(&mut self, pane: &str, at: Point<Pixels>, cx: &mut Context<Self>) {
         if self.pane_movable(pane) {
             self.pane_drag = Some(PaneDrag {
-                pane: pane.to_owned(), tab: self.model.active_tab().unwrap().id.clone(),
+                whole_tab: false, mod_target: None,
+                pane: pane.to_owned(), tab: self.model.tab_of(pane).unwrap().id.clone(),
                 down: at, moving: false, target: None,
             });
             cx.notify();
@@ -104,6 +130,7 @@ impl AppWindow {
 
     fn pane_target(&self, at: Point<Pixels>) -> Option<(String, Option<Edge>)> {
         let d = self.pane_drag.as_ref()?;
+        if d.whole_tab { return None; }
         let tab = self.model.active_tab().filter(|t| t.id == d.tab && t.zoomed.is_none())?;
         let bounds = self.bounds.borrow();
         tab.shown().visible_blocks().into_iter().filter(|n| n.is_pane() && n.id != d.pane)
@@ -120,6 +147,7 @@ impl AppWindow {
             return;
         }
         d.moving = true;
+        if d.mod_target.as_ref().is_some_and(|(_, _, b)| !b.contains(&at)) { d.mod_target = None; }
         let target = self.pane_target(at);
         self.pane_drag.as_mut().unwrap().target = target;
         cx.notify();
@@ -136,13 +164,22 @@ impl AppWindow {
         let Some(d) = self.pane_drag.take() else { return false };
         if !d.moving {
             cx.notify();
-            return true;
+            return false;
         }
-        if self.pane_movable(&d.pane)
-            && let Some((target, edge)) = target
-            && self.model.move_pane(&d.pane, &target, edge)
-        {
-            self.sync(window, cx);
+        if let Some((kind, id, _)) = d.mod_target.filter(|(_, _, bounds)| bounds.contains(&at)) {
+            if d.whole_tab {
+                let destination = if kind == "space" { Some(id.clone()) } else { self.model.space_of(&id).map(|s| s.id.clone()) };
+                if let Some(space) = destination {
+                    let index = (kind == "tab").then(|| self.model.space(&space).and_then(|s| s.tabs.iter().position(|t| t.id == id)).map(|i| i + 1)).flatten();
+                    self.run("tab.move", json!({"id":d.pane,"space":space,"index":index}), window, cx);
+                }
+            } else {
+                let key = if kind == "pane" { "target" } else { &kind };
+                self.run("pane.move", json!({"pane":d.pane,key:id}), window, cx);
+            }
+        } else if !d.whole_tab && self.pane_movable(&d.pane) && let Some((target, edge)) = target {
+            let edge = edge.map(|e| match e { Edge::Left => "left", Edge::Right => "right", Edge::Top => "top", Edge::Bottom => "bottom" });
+            self.run("pane.move", json!({"pane":d.pane,"target":target,"edge":edge}), window, cx);
         }
         cx.defer_in(window, |this, window, cx| this.restore_focus(window, cx));
         cx.notify();
@@ -150,7 +187,11 @@ impl AppWindow {
     }
 
     pub(super) fn pane_drag_layer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let preview = self.pane_drag.as_ref().and_then(|d| d.target.as_ref()).and_then(|(id, edge)| {
+        let mod_preview = self.pane_drag.as_ref().filter(|d| d.moving).and_then(|d| d.mod_target.as_ref()).map(|(_, _, b)| {
+            div().absolute().left(b.origin.x).top(b.origin.y).w(b.size.width).h(b.size.height)
+                .bg(c("accent").opacity(0.18)).border_2().border_color(c("accent")).into_any_element()
+        });
+        let preview = mod_preview.or_else(|| self.pane_drag.as_ref().and_then(|d| d.target.as_ref()).and_then(|(id, edge)| {
             let mut b = *self.bounds.borrow().get(id)?;
             match edge {
                 Some(Edge::Left) => b.size.width /= 2.,
@@ -161,10 +202,10 @@ impl AppWindow {
             }
             Some(div().absolute().left(b.origin.x).top(b.origin.y).w(b.size.width).h(b.size.height)
                 .bg(c("accent").opacity(0.18)).border_2().border_color(c("accent")).into_any_element())
-        });
+        }));
         let this = cx.entity().downgrade();
         div().id("pane-drag-layer").absolute().inset_0()
-            .when(self.pane_drag.is_some(), |d| d.occlude().cursor(CursorStyle::ClosedHand))
+            .when(self.pane_drag.as_ref().is_some_and(|d| d.moving), |d| d.cursor(CursorStyle::ClosedHand))
             .children(preview).child(canvas(
             |_, _, _| {},
             move |_, _, window, _| {
@@ -186,6 +227,15 @@ impl AppWindow {
             },
         ).absolute().size_full()).into_any_element()
     }
+}
+
+fn event_point(event: &Value) -> Option<Point<Pixels>> {
+    Some(point(px(event["position"]["x"].as_f64()? as f32), px(event["position"]["y"].as_f64()? as f32)))
+}
+
+fn event_bounds(event: &Value) -> Option<Bounds<Pixels>> {
+    let b = &event["bounds"];
+    Some(Bounds::new(point(px(b["x"].as_f64()? as f32), px(b["y"].as_f64()? as f32)), size(px(b["width"].as_f64()? as f32), px(b["height"].as_f64()? as f32))))
 }
 
 #[cfg(test)]

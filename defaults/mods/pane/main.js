@@ -6,7 +6,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, props, run, theme, home } from "herdr";
+import { panes, props, run, beginDrag, dragTarget, theme, home } from "herdr";
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -33,6 +33,7 @@ export default class Pane extends View {
       .rounded(4)
       .text_color(t.dim)
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => {
         cx.stop_propagation();
         run(command, args);
@@ -59,6 +60,8 @@ export default class Pane extends View {
       .border_color(t.border)
       .text_size(12)
       .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })
+      .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); beginDrag("pane", pane, e); })
+      .on_mouse_move(e => dragTarget("pane", pane, e))
       .on_click(() => run("pane.focus", { pane }))
       .when(Boolean(pic), (el) => el.child(pic))
       .child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))

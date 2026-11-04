@@ -52,7 +52,8 @@ export function playSound(sound: string): null;
  *   space.move {id, index}, space.select {index | id}, space.next, space.prev.
  * Tabs: tab.new {name?, space?, folder?, argv?, task?} (argv: an agent, task: its first message)
  *   or {name?, space?, mod, props?} (a tab whose only pane is a mod),
- *   tab.close {id?}, tab.rename {id?, name}, tab.move {id, index}, tab.select {index | id},
+ *   tab.close {id?}, tab.rename {id?, name}, tab.move {id, index?, space?}, tab.select {index | id},
+ *   pane.move {pane, space? | tab? | target?, edge?},
  *   tab.next, tab.prev.
  * Panes: pane.split {direction: "right" | "down", pane?}, pane.close {pane?}, pane.zoom {pane?},
  *   pane.focus {pane | terminal}, pane.go {direction}, pane.swap {direction}. Pane menus get target { pane, terminal }.
@@ -77,6 +78,9 @@ export function playSound(sound: string): null;
  * Mods: "<mod>.<command>" delivers <command> to that mod's nextCommand().
  */
 export function run(name: string, args?: Record<string, unknown>): null;
+
+export function beginDrag(kind: "tab" | "pane", id: string, event: import("gpui-kit").MouseButtonEvent): null;
+export function dragTarget(kind: "space" | "tab" | "pane", id: string, event: import("gpui-kit").MouseMoveEvent): null;
 
 export type Status = "working" | "blocked" | "done" | "idle";
 

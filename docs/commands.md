@@ -91,12 +91,25 @@ Rename a tab (asks the person when no name; an empty name: called by its number 
 
 ## `tab.move`
 
-Move a tab to a position in its space (1 = first).
+Move a tab to a position (1 = first), or append it to a space on the same machine.
 
 | Argument | Required |
 |---|---|
 | `id` | yes |
-| `index` | yes |
+| `index` | no |
+| `space` | no |
+
+## `pane.move`
+
+Move a pane to a new tab in a space, or beside a target pane or into a tab on the same machine. Edge: left, right, top, bottom; center swaps within a tab.
+
+| Argument | Required |
+|---|---|
+| `pane` | yes |
+| `space` | no |
+| `tab` | no |
+| `target` | no |
+| `edge` | no |
 
 ## `pane.split`
 
@@ -342,6 +355,12 @@ Show a layout (layouts/<name>.json), or the next one.
 | Argument | Required |
 |---|---|
 | `name` | no |
+
+## `layout.refresh_background`
+
+Reload the shown layout's root background image from its configured path, without changing the layout or focus.
+
+No arguments.
 
 ## `layout.clone`
 
