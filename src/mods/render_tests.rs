@@ -107,7 +107,7 @@ fn fixture(populated: bool, props: Value, update: Value) -> BTreeMap<String, Val
 }
 
 fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostModule {
-    let mut module = HostModule::new("herdr");
+    let mut module = HostModule::new("herdr").function("keyboardTerminal", |_| Ok(HostValue::Null));
     for (name, value) in values {
         module = module.function(name, move |_| Ok(to_host(&value)));
     }

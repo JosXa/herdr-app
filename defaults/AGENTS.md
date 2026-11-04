@@ -954,6 +954,10 @@ All of it is in `herdr.d.ts`. In short:
   appearance now), `keys()`, `commands()` (every app
   command, its arguments and what it does), `layouts()` (the layout names).
   `focused().agent` is the agent an agent block shows.
+  `keyboardTerminal()` returns the machine-qualified address of the terminal that
+  owns keyboard focus, including peeks, floating terminals and terminal search.
+  It is null while a sidebar, Inbox, another nonterminal surface, or an inactive
+  window holds focus. Use it for attention tracking; `focused()` keeps the model selection.
   `focused().space`/`tab` describe the current window context. With a layout terminal
   block focused, `pane` and `shown` are null; `terminal` and `cwd` describe that block,
   not its source pane. Check `focused()?.pane` before offering pane controls.

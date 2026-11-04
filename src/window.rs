@@ -263,6 +263,7 @@ struct Term {
     address: String,
     focus: FocusHandle,
     _sub: Subscription,
+    _focus: [Subscription; 2],
 }
 
 enum TerminalChange {
@@ -398,6 +399,7 @@ pub struct AppWindow {
     reply: Option<Value>,
     /// The `where` label last written per terminal address.
     written_where: HashMap<String, String>,
+    where_writes: HashMap<String, async_channel::Receiver<()>>,
     /// `herdr.seen` turns written but not yet back from the core.
     written_seen: HashMap<String, u64>,
     /// Agents the person is looking at, and the turn they were shared as seen at.
@@ -449,6 +451,7 @@ pub struct AppWindow {
     _tasks: Vec<Task<()>>,
     /// Gives the keyboard back when what had it leaves the screen (`restore_focus`).
     _focus_lost: Option<Subscription>,
+    _keyboard_activation: Option<Subscription>,
     /// Remembers where the window is (`place.rs`); the write waiting to settle.
     _place: Option<Subscription>,
     place_write: Option<Task<()>>,
@@ -494,6 +497,7 @@ impl AppWindow {
             person: settings::Person::default(),
             reply: None,
             written_where: HashMap::new(),
+            where_writes: HashMap::new(),
             written_seen: HashMap::new(),
             looked: HashMap::new(),
             watched: Watched::default(),
@@ -533,10 +537,12 @@ impl AppWindow {
             focus: cx.focus_handle(),
             _tasks: Vec::new(),
             _focus_lost: None,
+            _keyboard_activation: None,
             _place: None,
             place_write: None,
         };
         w._focus_lost = Some(cx.on_focus_lost(window, |this, window, cx| this.restore_focus(window, cx)));
+        w._keyboard_activation = Some(cx.observe_window_activation(window, |this, window, cx| this.publish_keyboard_terminal(window, cx)));
         w._place = Some(cx.observe_window_bounds(window, |this, window, cx| {
             if let Some(t) = crate::place::changed(window, cx) {
                 this.place_write = Some(t);
@@ -1410,7 +1416,9 @@ impl AppWindow {
                 }
             });
             let focus = view.read(cx).focus_handle().clone();
-            self.terms.insert(id, Term { view, address, focus, _sub: sub });
+            let focus_in = cx.on_focus_in(&focus, window, |this, window, cx| this.publish_keyboard_terminal(window, cx));
+            let focus_out = cx.on_focus_out(&focus, window, |this, _, window, cx| this.publish_keyboard_terminal(window, cx));
+            self.terms.insert(id, Term { view, address, focus, _sub: sub, _focus: [focus_in, focus_out] });
         }
         let gone: Vec<String> = self.terms.keys().filter(|id| !want_terms.contains(*id)).cloned().collect();
         for id in gone {
@@ -1490,6 +1498,7 @@ impl AppWindow {
             self.model.mark_seen(&visible);
         }
         self.share_seen(cx);
+        self.publish_keyboard_terminal(window, cx);
         self.publish(cx);
         self.save();
         cx.notify();
@@ -1739,6 +1748,19 @@ impl AppWindow {
         self.write_where(cx);
     }
 
+    fn keyboard_terminal(&self, window: &Window, cx: &App) -> Option<String> {
+        if !window.is_window_active() {
+            return None;
+        }
+        self.terms.values().find(|term| term.view.read(cx).owns_keyboard_focus(window, cx)).map(|term| term.address.clone())
+    }
+
+    fn publish_keyboard_terminal(&self, window: &Window, cx: &mut Context<Self>) {
+        if mods::publish_keyboard_terminal(json!(self.keyboard_terminal(window, cx))) {
+            self.refresh_snapshot_mods(cx);
+        }
+    }
+
     fn write_where(&mut self, cx: &mut Context<Self>) {
         let m = &self.model;
         let home = home();
@@ -1766,6 +1788,7 @@ impl AppWindow {
             }
         }
         self.written_where.retain(|a, _| self.live.contains_key(a));
+        self.where_writes.retain(|a, _| self.live.contains_key(a));
         for (addr, labels) in want {
             if self.changing_terminals.contains(&addr) { continue; }
             let place = labels.to_string();
@@ -1776,9 +1799,17 @@ impl AppWindow {
             // failed write is forgotten so the next publish tries again.
             self.written_where.insert(addr.clone(), place.clone());
             let core = self.core.clone();
+            let (completed, pending) = async_channel::bounded::<()>(1);
+            let previous = self.where_writes.insert(addr.clone(), pending);
+            let params = json!({ "terminal": addr, "labels": labels });
+            let job = cx.background_executor().spawn(async move {
+                if let Some(previous) = previous { let _ = previous.recv().await; }
+                let result = core.call("terminal.label", params);
+                drop(completed);
+                result
+            });
             cx.spawn(async move |this, cx| {
-                let params = json!({ "terminal": addr, "labels": labels });
-                let Err(e) = cx.background_executor().spawn(async move { core.call("terminal.label", params) }).await else { return };
+                let Err(e) = job.await else { return };
                 tracing::warn!("where label for {addr}: {e:#}");
                 let _ = this.update(cx, |this, _| {
                     if this.written_where.get(&addr) == Some(&place) {
@@ -2548,8 +2579,11 @@ impl AppWindow {
         self.pending_terminals.insert(address.clone(), PendingTerminalChange { change, reply: rx });
         let core = self.core.clone();
         let addr = address.clone();
+        let previous = self.where_writes.remove(&address);
+        self.written_where.remove(&address);
         // The drain must not need the foreground continuation to start this work.
         let job = cx.background_executor().spawn(async move {
+            if let Some(previous) = previous { let _ = previous.recv().await; }
             let result = (|| {
                 core.call("terminal.label", json!({"terminal":addr,"labels":labels}))?;
                 core.call("terminal.keep", json!({"terminal":addr,"keep":keep}))?;
@@ -4777,6 +4811,7 @@ impl Render for AppWindow {
         }
         self.tick_floats(window);
         self.apply_titlebar(window);
+        self.publish_keyboard_terminal(window, cx);
         if mods::publish_window(self.window_json(window)) {
             self.refresh_snapshot_mods(cx);
         }
@@ -5277,6 +5312,152 @@ mod tests {
     #[test]
     fn pane_ring_follows_keyboard_focus() {
         in_own_process("pane_ring_focus");
+    }
+
+    #[test]
+    fn mods_observe_actual_terminal_keyboard_ownership() {
+        in_own_process("keyboard_terminal_focus");
+    }
+
+    #[gpui::test]
+    fn keyboard_terminal_focus(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("keyboard_terminal_focus") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "keyboard-probe", r#"
+import { View, div } from 'gpui-kit';
+import { focused, keyboardTerminal, setShared } from 'herdr';
+export default class Probe extends View {
+    render() { setShared('keyboard.seen', keyboardTerminal()); setShared('keyboard.selected', focused()?.terminal); return div(); }
+}
+"#, json!({ "id": "root", "type": "row", "children": [
+            { "id": "first", "type": "block", "content": { "tab": "active" } },
+            { "id": "second", "type": "block", "content": { "terminal": "t2" } },
+            { "id": "probe", "type": "block", "content": { "mod": "keyboard-probe" } }
+        ] }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            let mut model = crate::model::Model::default();
+            model.add_space("space", "space", "", crate::model::Tab::new("tab", "tab", "pane", "t1"));
+            this.model = crate::model::Model::default();
+            crate::mirror::Document::capture(&model, None).replace(&mut this.model, Some("runner"));
+            this.model.focus_pane("runner/pane");
+            this.sync(window, cx);
+            window.activate_window();
+        }));
+        cx.run_until_parked();
+        let mut selected = "runner/t1";
+        for (pane, address) in [(Some("runner/pane"), Some("runner/t1")), (None, None), (Some("second"), Some("t2")), (None, None), (Some("runner/pane"), Some("runner/t1"))] {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                let target = pane.and_then(|pane| this.pane_focus(pane, cx)).unwrap_or_else(|| this.focus.clone());
+                target.focus(window, cx);
+                assert_eq!(this.keyboard_terminal(window, cx).as_deref(), address);
+            }));
+            cx.run_until_parked();
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                assert_eq!(this.keyboard_terminal(window, cx).as_deref(), address);
+                assert_eq!(this.model.focused_pane().as_deref(), Some("runner/pane"));
+            }));
+            assert_eq!(crate::mods::shared("keyboard.seen"), Some(json!(address)));
+            if let Some(address) = address { selected = address; }
+            assert_eq!(crate::mods::shared("keyboard.selected"), Some(json!(selected)));
+        }
+        cx.deactivate_window();
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            assert_eq!(this.keyboard_terminal(window, cx), None);
+        }));
+        assert_eq!(crate::mods::shared("keyboard.seen"), Some(json!(null)));
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        assert_eq!(crate::mods::shared("keyboard.seen"), Some(json!("runner/t1")));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.peek_terminal("runner/peek", window, cx);
+        }));
+        cx.run_until_parked();
+        assert_eq!(crate::mods::shared("keyboard.seen"), Some(json!("runner/peek")));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.close_overlay("terminal-peek", window, cx);
+            this.open_overlay("keyboard-float".into(), json!({
+                "kind":"window", "width":300, "height":200,
+                "layout":{"type":"block", "content":{"terminal":"runner/floating"}}
+            }), window, cx);
+            this.terms.values().find(|term| term.address == "runner/floating").unwrap().focus.focus(window, cx);
+        }));
+        cx.run_until_parked();
+        assert_eq!(crate::mods::shared("keyboard.seen"), Some(json!("runner/floating")));
+    }
+
+    #[test]
+    fn queued_ownership_writes_finish_before_parking_clears_labels() {
+        in_own_process("park_queued_labels");
+    }
+
+    #[gpui::test]
+    fn park_queued_labels(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        use std::sync::{Arc, Mutex};
+        if !running_alone("park_queued_labels") { return; }
+        let (view, cx) = open_window(cx, "park-test", "import { View, div } from 'gpui-kit'; export default class Probe extends View { render() { return div(); } }", json!({
+            "id":"main", "type":"block", "content":{"mod":"park-test"}
+        }));
+        for machine in [None, Some("vps")] {
+            let terminal = crate::mirror::qualify("terminal", machine);
+            let applied = Arc::new(Mutex::new(json!({"labels":{},"keep":true,"calls":[]})));
+            let trace = applied.clone();
+            let core = crate::hc::responding(move |method, params| {
+                let mut state = trace.lock().unwrap();
+                match method {
+                    "terminal.label" => {
+                        for (key, value) in params["labels"].as_object().unwrap() {
+                            state["labels"][key] = value.clone();
+                        }
+                        state["calls"].as_array_mut().unwrap().push(params["labels"].clone());
+                    }
+                    "terminal.keep" => state["keep"] = params["keep"].clone(),
+                    _ => {}
+                }
+                json!({})
+            });
+            let (release, previous) = async_channel::bounded::<()>(1);
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                let mut model = crate::model::Model::default();
+                model.add_space("source", "source", "", crate::model::Tab::new("tab", "tab", "pane", "terminal"));
+                model.add_space("target", "target", "", crate::model::Tab::new("other", "other", "other-pane", "other-terminal"));
+                this.model = crate::model::Model::default();
+                crate::mirror::Document::capture(&model, None).replace(&mut this.model, machine);
+                this.core = core;
+                this.live.clear();
+                this.live.insert(terminal.clone(), json!({"labels":{},"keep":true}));
+                this.written_where.clear();
+                this.where_writes.insert(terminal.clone(), previous);
+                let pane = crate::mirror::qualify("pane", machine);
+                let destination = crate::mirror::qualify("target", machine);
+                assert!(this.model.move_pane_to(&pane, Some(&destination), None, None, None));
+                this.write_where(cx);
+                this.start_terminal_change(terminal.clone(), super::TerminalChange::Park, window, cx);
+                this.model.space_mut(&destination).unwrap().name = "renamed while parking".into();
+                this.write_where(cx);
+            }));
+            cx.run_until_parked();
+            let waiting = applied.lock().unwrap().clone();
+            drop(release);
+            cx.run_until_parked();
+            let final_state = applied.lock().unwrap().clone();
+            assert_eq!(final_state["calls"].as_array().unwrap().len(), 2);
+            assert_eq!(final_state["labels"]["herdr.space"], "");
+            assert_eq!(final_state["labels"]["herdr.tab"], "");
+            assert_eq!(final_state["keep"], false);
+            assert_eq!(final_state["calls"][0]["herdr.space"], "target");
+            assert!(waiting["calls"].as_array().unwrap().is_empty());
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.live.insert(terminal.clone(), json!({"labels":final_state["labels"],"keep":final_state["keep"]}));
+                this.documents.entry(machine.unwrap_or_default().into()).or_default().available = true;
+                this.reconcile(window, cx);
+                assert!(this.model.pane_of(&terminal).is_none());
+                assert!(!this.changing_terminals.contains(&terminal));
+            }));
+        }
     }
 
     #[test]

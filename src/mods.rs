@@ -567,6 +567,7 @@ pub struct Snapshot {
     pub panes: Value,
     pub terminals: Value,
     pub focused: Value,
+    pub keyboard_terminal: Value,
     /// Floating blocks by id: { edge, align, vertical }.
     pub floats: Value,
     /// { platform, titlebar, buttons, maximized, fullscreen, active }.
@@ -576,7 +577,7 @@ pub struct Snapshot {
 impl Default for Snapshot {
     /// Lists start empty, never null, so mods can map over them right away.
     fn default() -> Self {
-        Snapshot { layout: Value::Null, spaces: json!([]), machines: json!([]), agents: json!([]), panes: json!([]), terminals: json!([]), focused: Value::Null, floats: json!({}), window: Value::Null }
+        Snapshot { layout: Value::Null, spaces: json!([]), machines: json!([]), agents: json!([]), panes: json!([]), terminals: json!([]), focused: Value::Null, keyboard_terminal: Value::Null, floats: json!({}), window: Value::Null }
     }
 }
 
@@ -627,6 +628,10 @@ pub fn publish_window(v: Value) -> bool {
 }
 pub fn publish_focused(v: Value) -> bool {
     publish("focused", |s| (std::mem::replace(&mut s.focused, v.clone()), v))
+}
+
+pub fn publish_keyboard_terminal(v: Value) -> bool {
+    publish("keyboardTerminal", |s| (std::mem::replace(&mut s.keyboard_terminal, v.clone()), v))
 }
 
 #[derive(Default)]
@@ -1028,6 +1033,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         })
         .function("terminals", reader(reads.clone(), "terminals", |s| &s.terminals))
         .function("focused", reader(reads.clone(), "focused", |s| &s.focused))
+        .function("keyboardTerminal", reader(reads.clone(), "keyboardTerminal", |s| &s.keyboard_terminal))
         .function("layout", reader(reads.clone(), "layout", |s| &s.layout))
         .function("layouts", |_| Ok(to_host(&json!(crate::window::layout_names()))))
         .function("commands", |_| {
