@@ -9,6 +9,7 @@ mod floats;
 mod movable;
 mod pane_drag;
 mod pane_size;
+mod focus_history;
 mod titlebar;
 
 use crate::layout::{Axis, Background as Paint, Content, Fit, HeaderContent, Kind, Line, Node, PaneFrame, Size as Span};
@@ -435,6 +436,7 @@ pub struct AppWindow {
     focused_block: Option<String>,
     synced_model_pane: Option<String>,
     pane_history: Vec<String>,
+    focus_history: focus_history::FocusHistory,
     window_active: bool,
     /// The system's appearance; a layout with a light and a dark theme follows it.
     system_dark: bool,
@@ -526,6 +528,7 @@ impl AppWindow {
             focused_block: None,
             synced_model_pane: None,
             pane_history: Vec::new(),
+            focus_history: Default::default(),
             window_active: true,
             system_dark: is_dark(window.appearance()),
             file_events: crate::files::watch(&mods::app_dir()),
@@ -1755,7 +1758,10 @@ impl AppWindow {
         self.terms.values().find(|term| term.view.read(cx).owns_keyboard_focus(window, cx)).map(|term| term.address.clone())
     }
 
-    fn publish_keyboard_terminal(&self, window: &Window, cx: &mut Context<Self>) {
+    fn publish_keyboard_terminal(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(pane) = self.keyboard_pane(window, cx) {
+            self.focus_history.visit(&pane);
+        }
         if mods::publish_keyboard_terminal(json!(self.keyboard_terminal(window, cx))) {
             self.refresh_snapshot_mods(cx);
         }
@@ -4869,7 +4875,13 @@ impl Render for AppWindow {
                     cx.stop_propagation();
                 }
             }))
-            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, _| this.pointer = ev.position))
+            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                this.pointer = ev.position;
+                if let MouseButton::Navigate(direction) = ev.button {
+                    this.navigate_history(direction, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 this.drag_window(ev, window);
                 if this.drag.is_none() {
@@ -5582,6 +5594,80 @@ export default class Probe extends View {
                 assert_eq!(this.live[&terminal]["labels"]["herdr.space"], "");
             }
         }));
+    }
+
+    #[test]
+    fn mouse_buttons_traverse_actual_pane_visits() {
+        in_own_process("mouse_history");
+    }
+
+    #[gpui::test]
+    fn mouse_history(cx: &mut gpui::TestAppContext) {
+        use gpui::*;
+        use serde_json::json;
+        if !running_alone("mouse_history") { return; }
+        let (view, cx) = open_window(cx, "test", "import { View, div } from 'gpui-kit'; export default class Sidebar extends View { render() { return div().size_full(); } }", json!({ "id": "root", "type": "row", "children": [
+            { "id": "sidebar", "type": "block", "size": {"px": 100}, "content": { "mod": "test" } },
+            { "id": "main", "type": "block", "content": { "tab": "active" } }
+        ] }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model = crate::model::Model::default();
+            for id in ["a", "b", "c"] {
+                this.model.add_space(id, id, "", crate::model::Tab::new(&format!("tab-{id}"), id, id, &format!("t-{id}")));
+            }
+            window.activate_window();
+            this.sync(window, cx);
+        }));
+        cx.run_until_parked();
+        for id in ["a", "b", "c"] {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.focus", json!({"pane": id}), window, cx)));
+            cx.run_until_parked();
+        }
+        for (x, direction, expected) in [
+            (200., NavigationDirection::Back, "b"),
+            (20., NavigationDirection::Back, "a"),
+            (200., NavigationDirection::Forward, "b"),
+            (20., NavigationDirection::Forward, "c"),
+            (20., NavigationDirection::Back, "b"),
+        ] {
+            let at = point(px(x), px(80.));
+            cx.simulate_mouse_down(at, MouseButton::Navigate(direction), Default::default());
+            cx.simulate_mouse_up(at, MouseButton::Navigate(direction), Default::default());
+            cx.run_until_parked();
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some(expected));
+                assert_eq!(this.model.focused_pane().as_deref(), Some(expected));
+            }));
+        }
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.focus", json!({"pane": "a"}), window, cx)));
+        cx.run_until_parked();
+        cx.simulate_mouse_down(point(px(20.), px(80.)), MouseButton::Navigate(NavigationDirection::Forward), Default::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("a"));
+        }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.focus.focus(window, cx);
+            this.model.focus_pane("c");
+            this.publish_keyboard_terminal(window, cx);
+            assert_eq!(this.keyboard_pane(window, cx), None);
+        }));
+        cx.run_until_parked();
+        cx.simulate_mouse_down(point(px(20.), px(80.)), MouseButton::Navigate(NavigationDirection::Back), Default::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("a"));
+        }));
+        for id in ["c", "b", "a"] {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.focus", json!({"pane": id}), window, cx)));
+            cx.run_until_parked();
+        }
+        cx.update(|_, cx| view.update(cx, |this, _| {
+            this.model.spaces.retain(|space| space.id != "b");
+        }));
+        cx.simulate_mouse_down(point(px(200.), px(80.)), MouseButton::Navigate(NavigationDirection::Back), Default::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("c"))));
     }
 
     #[test]
