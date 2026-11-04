@@ -5,6 +5,47 @@ impl Kind {
     fn axis(self) -> usize { usize::from(self != Self::X) }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_and_disconnected_corridors_keep_exact_distances_and_pressure() {
+        for axis in 0..2 {
+            for focus in [0usize, 75, 149] {
+                let mut solver = Solver::new([23, 8]);
+                let kind = if axis == 0 { Kind::X } else { Kind::Y };
+                solver.nodes.push(Node::new([10000; 2], [0; 2], kind, None, 0));
+                for index in 0..151 {
+                    let mut size = [10; 2];
+                    size[axis] = 2;
+                    let mut pos = [0; 2];
+                    pos[axis] = if index == 150 { 1000 } else { index as i64 * 3 };
+                    let id = solver.nodes.len();
+                    solver.nodes.push(Node::new(size, pos, Kind::Leaf, Some(0), index));
+                    solver.nodes[0].children.push(id);
+                    solver.leaves.push(id);
+                }
+                solver.focus = solver.leaves[focus];
+                solver.corridor = [0, 0, 10000, 10000];
+                solver.graph();
+                for (index, &id) in solver.leaves.iter().enumerate() {
+                    let distance = if index == 150 { -1 } else { index.abs_diff(focus) as i64 };
+                    assert_eq!(solver.nodes[id].distance, distance);
+                    for pressure_axis in 0..2 {
+                        let mut expected = 10000;
+                        for _ in 0..if distance < 0 { 9999 } else { distance } {
+                            expected = (expected * if pressure_axis == 0 { 90 } else { 70 } / 100).max(1);
+                        }
+                        if id == solver.focus { expected = expected * if pressure_axis == 0 { 200 } else { 140 } / 100; }
+                        assert_eq!(solver.leaf_pressure(id, pressure_axis), expected);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct Node {
     pub size: [i64; 2],
@@ -64,30 +105,27 @@ impl Solver {
     }
 
     fn graph(&mut self) {
-        let mut edges = vec![vec![]; self.nodes.len()];
-        for (i, &a) in self.leaves.iter().enumerate() {
-            for &b in &self.leaves[i + 1..] {
-                let (a_node, b_node) = (&self.nodes[a], &self.nodes[b]);
-                if (0..2).any(|axis| {
-                    let other = 1 - axis;
-                    overlap(a_node.pos[other], a_node.pos[other] + a_node.size[other], b_node.pos[other], b_node.pos[other] + b_node.size[other])
-                        && (a_node.pos[axis] + a_node.size[axis] + 1 == b_node.pos[axis]
-                            || b_node.pos[axis] + b_node.size[axis] + 1 == a_node.pos[axis])
-                }) {
-                    edges[a].push(b);
-                    edges[b].push(a);
-                }
-            }
-        }
         self.nodes[self.focus].distance = 0;
-        let mut queue = vec![self.focus];
+        let mut queue = Vec::with_capacity(self.leaves.len());
+        queue.push(self.focus);
         let mut head = 0;
         while head < queue.len() {
             let id = queue[head];
             head += 1;
-            for &neighbor in &edges[id] {
+            let pos = self.nodes[id].pos;
+            let size = self.nodes[id].size;
+            let distance = self.nodes[id].distance + 1;
+            for &neighbor in &self.leaves {
                 if self.nodes[neighbor].distance >= 0 { continue; }
-                self.nodes[neighbor].distance = self.nodes[id].distance + 1;
+                let b = &self.nodes[neighbor];
+                let adjacent = (0..2).any(|axis| {
+                    let other = 1 - axis;
+                    overlap(pos[other], pos[other] + size[other], b.pos[other], b.pos[other] + b.size[other])
+                        && (pos[axis] + size[axis] + 1 == b.pos[axis]
+                            || b.pos[axis] + b.size[axis] + 1 == pos[axis])
+                });
+                if !adjacent { continue; }
+                self.nodes[neighbor].distance = distance;
                 queue.push(neighbor);
             }
         }
@@ -99,15 +137,20 @@ impl Solver {
         if !overlap(n.pos[other], n.pos[other] + n.size[other], self.corridor[other], self.corridor[other + 2]) { return 0; }
         let distance = if n.distance < 0 { 9999 } else { n.distance };
         let mut score = 10000;
-        for _ in 0..distance { score = (score * if axis == 0 { 90 } else { 70 } / 100).max(1); }
+        for _ in 0..distance {
+            score = (score * if axis == 0 { 90 } else { 70 } / 100).max(1);
+            if score == 1 { break; }
+        }
         if id == self.focus { score = score * if axis == 0 { 200 } else { 140 } / 100; }
         score
     }
 
     fn annotate(&mut self, id: usize) {
-        let children = self.nodes[id].children.clone();
-        for &child in &children { self.annotate(child); }
+        for index in 0..self.nodes[id].children.len() {
+            self.annotate(self.nodes[id].children[index]);
+        }
         for axis in 0..2 {
+            let children = &self.nodes[id].children;
             self.nodes[id].pressure[axis] = if children.is_empty() { self.leaf_pressure(id, axis) }
                 else { children.iter().map(|&c| self.nodes[c].pressure[axis]).max().unwrap() };
         }
@@ -145,21 +188,22 @@ impl Solver {
         if minimum * count > available { minimum = available / count; }
         minimum = minimum.max(1);
         let extra = (available - minimum * count).max(0);
-        let mut weights = weights.to_vec();
-        let mut total: i64 = weights.iter().sum();
-        if total <= 0 { weights.fill(1); total = count; }
-        let mut sizes: Vec<_> = weights.iter().map(|w| minimum + w * extra / total).collect();
+        let total: i64 = weights.iter().sum();
+        let uniform = total <= 0;
+        let total = if uniform { count } else { total };
+        let weight = |index: usize| if uniform { 1 } else { weights[index] };
+        let mut sizes: Vec<_> = (0..weights.len()).map(|i| minimum + weight(i) * extra / total).collect();
         let mut used: i64 = sizes.iter().sum();
-        while used < available {
+        if used < available {
             let mut best = 0;
-            for i in 1..weights.len() { if weights[i] > weights[best] { best = i; } }
-            sizes[best] += 1;
-            used += 1;
+            for i in 1..weights.len() { if weight(i) > weight(best) { best = i; } }
+            sizes[best] += available - used;
+            used = available;
         }
         while used > available {
             let mut best: Option<usize> = None;
             for i in 0..weights.len() {
-                if sizes[i] > minimum && best.is_none_or(|b| weights[i] < weights[b]) { best = Some(i); }
+                if sizes[i] > minimum && best.is_none_or(|b| weight(i) < weight(b)) { best = Some(i); }
             }
             let Some(best) = best else { break };
             sizes[best] -= 1;
@@ -171,7 +215,8 @@ impl Solver {
     pub(super) fn positions(&mut self, id: usize) {
         let axis = self.nodes[id].kind.axis();
         let mut cursor = self.nodes[id].pos[axis];
-        for child in self.nodes[id].children.clone() {
+        for index in 0..self.nodes[id].children.len() {
+            let child = self.nodes[id].children[index];
             self.nodes[child].pos[axis] = cursor;
             self.nodes[child].pos[1 - axis] = self.nodes[id].pos[1 - axis];
             self.nodes[child].size[1 - axis] = self.nodes[id].size[1 - axis];
@@ -182,14 +227,15 @@ impl Solver {
 
     fn rebalance(&mut self, id: usize) {
         let n = &self.nodes[id];
-        let children = n.children.clone();
         let Some(target) = n.target else { return };
+        let count = n.children.len();
         let axis = n.kind.axis();
-        let available = n.size[axis] - (children.len() as i64 - 1);
-        if children.len() <= 1 || available <= 0 { return; }
-        let weights: Vec<_> = children.iter().enumerate().map(|(i, &c)| self.weight(c, axis, i, target)).collect();
+        let available = n.size[axis] - (count as i64 - 1);
+        if count <= 1 || available <= 0 { return; }
+        let weights: Vec<_> = n.children.iter().enumerate().map(|(i, &c)| self.weight(c, axis, i, target)).collect();
         let sizes = self.allocate(axis, available, &weights);
-        for (i, &child) in children.iter().enumerate() {
+        for i in 0..count {
+            let child = self.nodes[id].children[i];
             self.nodes[child].size[axis] = sizes[i];
             self.nodes[child].size[1 - axis] = self.nodes[id].size[1 - axis];
         }
@@ -198,19 +244,20 @@ impl Solver {
 
     fn fit(&mut self, id: usize) {
         let n = &self.nodes[id];
-        let children = n.children.clone();
-        if children.is_empty() { return; }
+        let count = n.children.len();
+        if count == 0 { return; }
         let axis = n.kind.axis();
-        let available = n.size[axis] - (children.len() as i64 - 1);
+        let available = n.size[axis] - (count as i64 - 1);
         if available <= 0 { return; }
         let side = n.parent.and_then(|p| {
             let parent = &self.nodes[p];
             parent.target.filter(|&t| parent.kind.axis() == axis && t != n.index).map(|t| n.index > t)
         });
-        let boundary = if side == Some(true) { children[0] } else { *children.last().unwrap() };
-        let grouped = children.len() > 1 && self.nodes[boundary].kind == if axis == 0 { Kind::Y } else { Kind::X };
-        let mut weights = vec![];
-        for &child in &children {
+        let boundary = self.nodes[id].children[if side == Some(true) { 0 } else { count - 1 }];
+        let grouped = count > 1 && self.nodes[boundary].kind == if axis == 0 { Kind::Y } else { Kind::X };
+        let mut weights = Vec::with_capacity(count);
+        for index in 0..count {
+            let child = self.nodes[id].children[index];
             self.nodes[child].size[1 - axis] = self.nodes[id].size[1 - axis];
             let c = &self.nodes[child];
             let mut weight = if c.pressure[axis] > 0 { c.pressure[axis] } else { c.size[axis].max(1) };
@@ -227,18 +274,21 @@ impl Solver {
             weights.push(weight);
         }
         if self.nodes[id].target.is_none()
-            && (children.iter().map(|&c| self.nodes[c].size[axis]).sum::<i64>() != available || weights.iter().sum::<i64>() > 0)
+            && (self.nodes[id].children.iter().map(|&c| self.nodes[c].size[axis]).sum::<i64>() != available || weights.iter().sum::<i64>() > 0)
         {
             let sizes = self.allocate(axis, available, &weights);
-            for (i, &child) in children.iter().enumerate() { self.nodes[child].size[axis] = sizes[i]; }
+            for (i, size) in sizes.into_iter().enumerate() {
+                let child = self.nodes[id].children[i];
+                self.nodes[child].size[axis] = size;
+            }
         }
-        for child in children { self.fit(child); }
+        for index in 0..count { self.fit(self.nodes[id].children[index]); }
     }
 
     fn heights(&mut self, id: usize) {
-        let children = self.nodes[id].children.clone();
-        if children.is_empty() { return; }
-        for &c in &children { self.heights(c); }
+        if self.nodes[id].children.is_empty() { return; }
+        for index in 0..self.nodes[id].children.len() { self.heights(self.nodes[id].children[index]); }
+        let children = &self.nodes[id].children;
         self.nodes[id].size[1] = children.iter().map(|&c| self.nodes[c].size[1]).sum::<i64>() + children.len() as i64 - 1;
     }
 
