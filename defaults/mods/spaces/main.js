@@ -5,7 +5,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
+import { spaces, machines, panes, run, dragTarget, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -393,7 +393,8 @@ export default class Spaces extends View {
         this.pressed = w.id;
         this.over = w.id;
       })
-      .on_mouse_move((_e, cx) => {
+      .on_mouse_move((e, cx) => {
+        dragTarget("space", w.id, e);
         const source = spaces().find(s => s.id === this.pressed);
         const over = source && (source.machine ?? null) === (w.machine ?? null) ? w.id : null;
         if (this.pressed !== null && this.over !== over) {
@@ -433,6 +434,7 @@ export default class Spaces extends View {
       .gap(4)
       .when(w.active, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
+      .on_mouse_move(e => dragTarget("space", w.id, e))
       .on_click(() => run("space.select", { id: w.id }))
       .child(div().text_color(w.active ? t.foreground : t.muted).child(String(i + 1)))
       .child(div().text_color(tone(t, w.status)).child(glyph(w.status)));

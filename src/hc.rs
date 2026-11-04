@@ -490,6 +490,27 @@ impl Drop for Core {
     }
 }
 
+#[cfg(test)]
+pub fn responding(mut handler: impl FnMut(&str, Value) -> Value + Send + 'static) -> Arc<Core> {
+    let mut core = offline();
+    let (writer, frames) = mpsc::channel::<Vec<u8>>();
+    let state = Arc::get_mut(&mut core).unwrap();
+    state.writer = writer;
+    state.routes.lock().unwrap().closed = false;
+    let routes = state.routes.clone();
+    std::thread::spawn(move || {
+        while let Ok(frame) = frames.recv() {
+            if frame[..4] != [0, 0, 0, 0] { continue; }
+            let request: Value = serde_json::from_slice(&frame[HEADER..]).unwrap();
+            let result = handler(request["method"].as_str().unwrap(), request["params"].clone());
+            if let Some(reply) = routes.lock().unwrap().replies.remove(&request["id"].as_u64().unwrap()) {
+                let _ = reply.send(Ok(result));
+            }
+        }
+    });
+    core
+}
+
 /// A core that is never there, for tests that open the window: every call
 /// fails at once, and it never reports the loss (so nothing reconnects).
 #[cfg(test)]

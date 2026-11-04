@@ -324,6 +324,71 @@ impl Model {
         true
     }
 
+    pub fn move_tab(&mut self, id: &str, destination: &str, index: Option<usize>) -> bool {
+        let Some(source) = self.space_of(id).filter(|s| s.tab(id).is_some()) else { return false };
+        let Some(target) = self.space(destination) else { return false };
+        if source.machine != target.machine { return false; }
+        let source_id = source.id.clone();
+        if source_id == destination {
+            let space = self.space_mut(destination).unwrap();
+            let from = space.tabs.iter().position(|t| t.id == id).unwrap();
+            let tab = space.tabs.remove(from);
+            let to = index.map_or(space.tabs.len(), |i| i.saturating_sub(1).min(space.tabs.len()));
+            space.tabs.insert(to, tab);
+            return true;
+        }
+        let tab = self.tab(id).unwrap().clone();
+        self.remove_tab(id);
+        let target = self.space_mut(destination).unwrap();
+        let to = index.map_or(target.tabs.len(), |i| i.saturating_sub(1).min(target.tabs.len()));
+        target.tabs.insert(to, tab);
+        self.select_tab(id);
+        true
+    }
+
+    pub fn move_pane_to(&mut self, pane: &str, space: Option<&str>, tab: Option<&str>, target: Option<&str>, edge: Option<crate::layout::Edge>) -> bool {
+        if [space.is_some(), tab.is_some(), target.is_some()].into_iter().filter(|present| *present).count() != 1 { return false; }
+        let Some(source_space) = self.space_of(pane) else { return false };
+        let Some(block) = self.tab_of(pane).and_then(|t| t.root.find(pane)).filter(|n| n.is_pane()).cloned() else { return false };
+        let destination_tab = target.and_then(|id| self.tab_of(id)).or_else(|| tab.and_then(|id| self.tab(id)));
+        if target.is_some_and(|id| !destination_tab.is_some_and(|t| t.root.find(id).is_some_and(Node::is_pane))) { return false; }
+        if tab.is_some() && destination_tab.is_none() { return false; }
+        let destination = destination_tab.and_then(|t| self.space_of(&t.id)).or_else(|| space.and_then(|id| self.space(id)));
+        let Some(destination) = destination else { return false };
+        if source_space.machine != destination.machine { return false; }
+        let machine = destination.machine.clone();
+        let destination_space = destination.id.clone();
+        let destination_tab = destination_tab.map(|t| t.id.clone());
+        if destination_tab.as_deref() == self.tab_of(pane).map(|t| t.id.as_str()) {
+            if !target.is_some_and(|target| self.move_pane(pane, target, edge)) { return false; }
+            self.focus_pane(pane);
+            return true;
+        }
+        let mut block = block;
+        block.size = None;
+        if let Some(tab) = destination_tab {
+            let target = target.map(str::to_owned).or_else(|| self.tab(&tab).and_then(Tab::focused_pane));
+            let Some(target) = target else { return false };
+            let edge = edge.unwrap_or(crate::layout::Edge::Right);
+            let mut root = self.tab(&tab).unwrap().root.clone();
+            let container = self.fresh_id_on("s", machine.as_deref());
+            let axis = if matches!(edge, crate::layout::Edge::Left | crate::layout::Edge::Right) { Axis::Row } else { Axis::Column };
+            if !root.split(&target, axis, block, container) { return false; }
+            if matches!(edge, crate::layout::Edge::Left | crate::layout::Edge::Top) { root.swap(pane, &target); }
+            self.remove_pane(pane);
+            let tab = self.tab_mut(&tab).unwrap();
+            tab.root = root;
+            tab.zoomed = None;
+        } else {
+            if self.tab_of(pane).is_some_and(|t| t.root.panes().len() == 1) && self.space_of(pane).is_some_and(|s| s.id == destination_space) { return false; }
+            let id = self.fresh_id_on("c", machine.as_deref());
+            self.remove_pane(pane);
+            self.add_tab(&destination_space, Tab::with_pane(&id, "", block));
+        }
+        self.focus_pane(pane);
+        true
+    }
+
     /// Removes a pane. Returns what else closed: the tab, and the space if it was its last.
     pub fn remove_pane(&mut self, pane_id: &str) -> (bool, bool) {
         let Some(c) = self.tab_of_mut(pane_id) else { return (false, false) };
@@ -771,6 +836,93 @@ mod tests {
             assert!(!m.move_pane(source, target, None));
             assert_eq!(format!("{:?}", m.spaces), before);
         }
+    }
+
+    #[test]
+    fn transferring_tabs_preserves_the_tree_and_repairs_the_source_selection() {
+        let mut m = model_with_one();
+        m.split("x1", Axis::Column, "x4", "t4");
+        m.add_tab("p1", Tab::new("c2", "other", "x2", "t2"));
+        m.add_space("p2", "web", "/web", Tab::new("c3", "target", "x3", "t3"));
+        m.select_tab("c1");
+        m.tab_mut("c1").unwrap().zoomed = Some("x4".into());
+        let root = serde_json::to_value(&m.tab("c1").unwrap().root).unwrap();
+        assert!(m.move_tab("c1", "p2", Some(1)));
+        assert_eq!(serde_json::to_value(&m.tab("c1").unwrap().root).unwrap(), root);
+        assert_eq!(m.tab("c1").unwrap().name, "fix login");
+        assert_eq!(m.tab("c1").unwrap().zoomed.as_deref(), Some("x4"));
+        assert_eq!(m.focused_pane().as_deref(), Some("x4"));
+        assert_eq!(m.space("p1").unwrap().active.as_deref(), Some("c2"));
+        assert_eq!(m.space("p2").unwrap().tabs[0].id, "c1");
+        assert!(m.move_tab("c2", "p2", None));
+        assert!(m.space("p1").is_none());
+        assert_eq!(m.recent[0].name, "api");
+        assert!(m.move_tab("c2", "p2", Some(1)));
+        assert_eq!(m.space("p2").unwrap().tabs[0].id, "c2");
+    }
+
+    #[test]
+    fn panes_move_between_tabs_and_spaces_without_changing_identity() {
+        let mut m = model_with_one();
+        let viewer = Node::block("viewer", Content::Mod { name: "markdown".into(), props: json!({"file":"notes.md"}) });
+        m.split_with("x1", Axis::Column, viewer.clone());
+        m.add_space("p2", "web", "/web", Tab::new("c2", "target", "x2", "t2"));
+        assert!(m.move_pane_to("viewer", Some("p2"), None, None, None));
+        assert_eq!(m.space_of("viewer").unwrap().id, "p2");
+        assert_eq!(serde_json::to_value(m.tab_of("viewer").unwrap().root.find("viewer").unwrap()).unwrap(), serde_json::to_value(viewer).unwrap());
+        assert_eq!(m.tab("c1").unwrap().root.panes().len(), 1);
+        assert!(m.move_pane_to("x1", None, None, Some("x2"), Some(crate::layout::Edge::Bottom)));
+        assert!(m.space("p1").is_none());
+        assert_eq!(m.address_of("x1").as_deref(), Some("t1"));
+        assert_eq!(m.focused_pane().as_deref(), Some("x1"));
+        assert_eq!(m.tab("c2").unwrap().root.panes().len(), 2);
+        assert!(m.move_pane_to("viewer", None, Some("c2"), None, None));
+        assert_eq!(m.space("p2").unwrap().tabs.len(), 1);
+        assert_eq!(m.tab("c2").unwrap().root.panes().len(), 3);
+    }
+
+    #[test]
+    fn moving_within_an_inactive_tab_selects_it_only_after_success() {
+        let mut m = model_with_one();
+        assert!(m.split("x1", Axis::Row, "x2", "t2"));
+        m.add_space("p2", "visible", "", Tab::new("c2", "visible", "x3", "t3"));
+        for (pane, tab, target) in [("x1", None, Some("x1")), ("missing", None, Some("x2")), ("x1", Some("c1"), None)] {
+            assert!(!m.move_pane_to(pane, None, tab, target, None));
+            assert_eq!(m.active_tab().unwrap().id, "c2");
+            assert_eq!(m.focused_pane().as_deref(), Some("x3"));
+        }
+        assert!(m.move_pane_to("x1", None, None, Some("x2"), None));
+        assert_eq!(m.active_space().unwrap().id, "p1");
+        assert_eq!(m.active_tab().unwrap().id, "c1");
+        assert_eq!(m.focused_pane().as_deref(), Some("x1"));
+    }
+
+    #[test]
+    fn remote_transfers_round_trip_in_their_machine_document_and_reject_other_machines() {
+        let mut local = model_with_one();
+        local.add_space("p2", "target", "", Tab::new("c2", "target", "x2", "t2"));
+        let mut m = model_with_one();
+        crate::mirror::Document::capture(&local, None).replace(&mut m, Some("vps"));
+        let before = format!("{:?}", m.spaces);
+        for (source, destination) in [("x1", "vps/p2"), ("missing", "p1"), ("vps/x1", "missing")] {
+            assert!(!m.move_pane_to(source, Some(destination), None, None, None));
+            assert_eq!(format!("{:?}", m.spaces), before);
+        }
+        assert!(!m.move_tab("c1", "vps/p2", None));
+        assert!(!m.move_tab("missing", "p1", None));
+        assert_eq!(format!("{:?}", m.spaces), before);
+        assert!(m.move_pane_to("vps/x1", Some("vps/p2"), None, None, None));
+        let moved_tab = m.tab_of("vps/x1").unwrap().id.clone();
+        assert!(moved_tab.starts_with("vps/"));
+        let document = crate::mirror::Document::capture(&m, Some("vps"));
+        let encoded = serde_json::to_string(&document).unwrap();
+        assert!(!encoded.contains("vps/"));
+        let mut restored = Model::default();
+        serde_json::from_str::<crate::mirror::Document>(&encoded).unwrap().replace(&mut restored, Some("vps"));
+        assert_eq!(restored.address_of("vps/x1").as_deref(), Some("vps/t1"));
+        assert_eq!(restored.tab_of("vps/x1").unwrap().id, moved_tab);
+        assert_eq!(restored.space_of("vps/x1").unwrap().id, "vps/p2");
+        assert_eq!(m.address_of("x1").as_deref(), Some("t1"));
     }
 
     #[test]

@@ -236,14 +236,21 @@ Properties any node can have:
 - `padding`: space inside the node's edge, px: `16` or `[vertical, horizontal]`.
 - row/column: `gap` (px between children), `divider` (`{ "width": 1, "color": "border" }`),
   `resizable` (default true: drag the boundary). This applies to that row/column only.
-- `movable` (default true): panes can be dragged by the app's top-center grip within a split tab.
+- `movable` (default true): panes can be dragged by the app's top-center grip.
   Unlike `resizable`, it inherits: the nearest explicit ancestor wins, through the
   tab tree and then the layout's tab block and its ancestors. Root `"movable": false`
   opts the layout out. Composition terminal blocks aren't tab panes and never drag.
-  Center drop swaps panes; an edge drop places beside it. Escape or dropping outside
-  another pane cancels. Zoomed tabs and one-pane tabs don't drag. The grip appears
-  on top-edge hover, regardless of the header's position or presence. Only the grip
-  starts dragging; header mods don't need drag handlers. `panes()` exposes `movable`.
+  Dropping onto the center swaps panes. Dropping onto an edge places the pane beside its target.
+  Escape or dropping outside
+  a valid target cancels. One-pane and zoomed tabs can move to another space. The grip appears
+  on top-edge hover, regardless of the header's position or presence. Shipped pane headers
+  also start drags. Mods can call `beginDrag("tab" | "pane", id, event)`
+  from left `on_mouse_down` and `dragTarget("space" | "tab" | "pane", id, event)`
+  from `on_mouse_move` on destination rows. The app owns the drag until release or Escape;
+  it requires a four-pixel move before dropping and uses the destination event's bounds.
+  A tab dropped on a space moves intact. A pane becomes a new tab there. Drops on tabs
+  put a tab at that tab's position, or add a pane beside its focused pane. Moves stay on the
+  same machine, including between remote spaces. `panes()` exposes `movable`.
 - `floating`: blocks over this node (below).
 - `window_drag: true`: dragging the node moves the window, a double-click
   maximizes it. A mod's own control inside opts out by stopping the press:
@@ -546,12 +553,17 @@ The main ones:
   props?}` for a tab whose only pane is a mod (a file, a board; split a shell
   in beside it like any tab), `tab.close {id?, confirmed?}` (closing the last tab
   closes its space and asks first unless confirmed),
-  `tab.rename {id?, name}` ("": its number again), `tab.move {id, index}`,
+   `tab.rename {id?, name}` ("": its number again), `tab.move {id, index?, space?}`
+   (index starts at 1, space defaults to its current space, omitted index appends),
   `tab.select {index | id}`, `tab.next`, `tab.prev`,
   `tab.settle {id?}`, `tab.unsettle {id?}` (index, next and prev
   skip settled tabs).
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
   terminal, or a mod pane), `pane.close {pane?}`,
+  `pane.move {pane, space? | tab? | target?, edge?}` (exactly one destination:
+  a new tab in a space, a split in a tab, or a pane to swap within its tab or split beside;
+  edge is left, right, top or bottom). Moves preserve pane IDs and terminal processes,
+  require the same machine, and select the destination. Empty source tabs and spaces close.
   `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`.
   `pane.go` prefers the most recently focused pane along the nearest edge in that
   direction; unvisited panes fall back to overlap, then top/left layout order.
@@ -946,6 +958,10 @@ All of it is in `herdr.d.ts`. In short:
   appearance now), `keys()`, `commands()` (every app
   command, its arguments and what it does), `layouts()` (the layout names).
   `focused().agent` is the agent an agent block shows.
+  `keyboardTerminal()` returns the machine-qualified address of the terminal that
+  owns keyboard focus, including peeks, floating terminals and terminal search.
+  It is null while a sidebar, Inbox, another nonterminal surface, or an inactive
+  window holds focus. Use it for attention tracking; `focused()` keeps the model selection.
   `focused().space`/`tab` describe the current window context. With a layout terminal
   block focused, `pane` and `shown` are null; `terminal` and `cwd` describe that block,
   not its source pane. Check `focused()?.pane` before offering pane controls.
