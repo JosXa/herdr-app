@@ -102,6 +102,7 @@ pub struct Cursor {
     pub color: Rgb,
 }
 
+#[derive(Clone)]
 pub struct Frame {
     /// A row that didn't change since the last frame is the same `Rc`.
     pub rows: Vec<Rc<Vec<Cell>>>,
@@ -473,6 +474,21 @@ fn install_png_decoder() {
     });
 }
 
+#[derive(Default)]
+struct RepaintTrial {
+    stream: crate::resize_trial::MarkerStream,
+    gate: crate::resize_trial::Gate,
+    complete: Option<CompleteFrame>,
+    marked: bool,
+    completed: bool,
+}
+
+struct CompleteFrame {
+    frame: Frame,
+    placements: Vec<Placement>,
+    images: HashMap<(u32, u64, [u32; 4]), Rc<(u32, u32, Vec<u8>)>>,
+}
+
 pub struct Vt {
     term: GhosttyTerminal,
     /// Created lazily when a find bar opens; each terminal owns its own search.
@@ -509,6 +525,7 @@ pub struct Vt {
     placements_cache: RefCell<Option<Vec<Placement>>>,
     /// Whether the program wants win32 key events (Ghostty doesn't track it).
     pub win32: crate::win32_keys::Win32Input,
+    repaint_trial: Option<RepaintTrial>,
 }
 
 /// What of the cursor a frame shows: (on screen, x, y, visible, style).
@@ -730,6 +747,7 @@ impl Vt {
                 seen_with: (0, 0),
                 placements_cache: RefCell::new(None),
                 win32: Default::default(),
+                repaint_trial: crate::resize_trial::config().freeze.then(RepaintTrial::default),
             };
             vt.apply_theme();
             vt
@@ -770,6 +788,10 @@ impl Vt {
 
     /// Visible kitty graphics placements, bottom layer first.
     pub fn placements(&self) -> Vec<Placement> {
+        if let Some(trial) = &self.repaint_trial
+            && trial.gate.pending()
+            && let Some(complete) = &trial.complete
+        { return complete.placements.clone(); }
         if let Some(placements) = self.placements_cache.borrow().as_ref() {
             return placements.clone();
         }
@@ -902,6 +924,16 @@ impl Vt {
 
     /// An image's pixels as BGRA (what GPUI uploads), cropped to `source`.
     pub fn image_bgra(&self, id: u32, source: [u32; 4]) -> Option<(u32, u32, Vec<u8>)> {
+        if let Some(trial) = &self.repaint_trial
+            && trial.gate.pending()
+            && let Some(complete) = &trial.complete
+        {
+            return complete.images.iter().find(|(key, _)| key.0 == id && key.2 == source).map(|(_, image)| image.as_ref().clone());
+        }
+        self.live_image_bgra(id, source)
+    }
+
+    fn live_image_bgra(&self, id: u32, source: [u32; 4]) -> Option<(u32, u32, Vec<u8>)> {
         unsafe {
             let mut g: GhosttyKittyGraphics = std::ptr::null_mut();
             ghostty_terminal_get(self.term, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &mut g as *mut _ as *mut c_void);
@@ -1207,6 +1239,28 @@ impl Vt {
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
+        let Some(trial) = &mut self.repaint_trial else { self.write_raw(bytes); return };
+        let parts = trial.stream.feed(bytes);
+        for part in parts {
+            match part {
+                crate::resize_trial::Part::Data(data) => self.write_raw(&data),
+                crate::resize_trial::Part::Ack(ack) => {
+                    let trial = self.repaint_trial.as_mut().unwrap();
+                    let matched = ack.frame > trial.gate.last_frame() && (ack.cols, ack.rows) == (self.cols, self.rows);
+                    trial.gate.accept(ack);
+                    if matched {
+                        let frame = self.read_frame();
+                        self.capture_complete(frame);
+                        let trial = self.repaint_trial.as_mut().unwrap();
+                        trial.marked = true;
+                        trial.completed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn write_raw(&mut self, bytes: &[u8]) {
         self.placements_cache.get_mut().take();
         self.win32.watch(bytes);
         unsafe { ghostty_terminal_vt_write(self.term, bytes.as_ptr(), bytes.len()) };
@@ -1224,6 +1278,18 @@ impl Vt {
     pub fn resize(&mut self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) {
         if cols == 0 || rows == 0 {
             return;
+        }
+        if self.repaint_trial.is_some() {
+            let cell_changed = self.shared.size.cell_width != cell_w || self.shared.size.cell_height != cell_h;
+            if cell_changed {
+                self.cancel_repaint_trial();
+            } else if (cols, rows) != (self.cols, self.rows) {
+                if self.repaint_trial.as_ref().unwrap().complete.is_none() {
+                    let frame = self.read_frame();
+                    self.capture_complete(frame);
+                }
+                self.repaint_trial.as_mut().unwrap().gate.begin((cols, rows), Instant::now());
+            }
         }
         self.placements_cache.get_mut().take();
         self.cols = cols;
@@ -1514,7 +1580,59 @@ impl Vt {
     }
 
     /// Updates the render state (respecting synchronized output) and reads one frame.
+    pub fn repaint_deadline(&self) -> Option<Instant> { self.repaint_trial.as_ref().and_then(|trial| trial.gate.deadline()) }
+
+    pub fn cancel_repaint_trial(&mut self) {
+        if let Some(trial) = &mut self.repaint_trial { trial.gate.cancel(); trial.complete = None; trial.marked = false; }
+    }
+
+    pub fn expire_repaint_trial(&mut self, now: Instant) {
+        if let Some(trial) = &mut self.repaint_trial {
+            let pending = trial.gate.pending();
+            trial.gate.expire(now);
+            if pending && !trial.gate.pending() { trial.marked = false; trial.complete = None; }
+        }
+    }
+
+    pub fn repaint_frozen(&self) -> bool {
+        self.repaint_trial.as_ref().is_some_and(|trial| trial.gate.pending() && trial.complete.is_some())
+    }
+
+    pub fn take_repaint_complete(&mut self) -> bool {
+        self.repaint_trial.as_mut().is_some_and(|trial| std::mem::take(&mut trial.completed))
+    }
+
+    fn capture_complete(&mut self, frame: Frame) {
+        let placements = self.placements();
+        let mut images = HashMap::new();
+        for placement in &placements {
+            let key = (placement.image, placement.generation, placement.source);
+            let cached = self.repaint_trial.as_ref().and_then(|trial| trial.complete.as_ref()).and_then(|complete| complete.images.get(&key)).cloned();
+            if let Some(image) = cached.or_else(|| self.live_image_bgra(placement.image, placement.source).map(Rc::new)) {
+                images.insert(key, image);
+            }
+        }
+        self.repaint_trial.as_mut().unwrap().complete = Some(CompleteFrame { frame, placements, images });
+    }
+
     pub fn frame(&mut self) -> Frame {
+        self.expire_repaint_trial(Instant::now());
+        if let Some(trial) = &self.repaint_trial
+            && trial.gate.pending()
+            && let Some(complete) = &trial.complete
+        {
+            let mut frame = complete.frame.clone();
+            frame.all = false;
+            return frame;
+        }
+        let frame = self.read_frame();
+        if self.repaint_trial.as_ref().is_some_and(|trial| !trial.marked) {
+            self.capture_complete(frame.clone());
+        }
+        frame
+    }
+
+    fn read_frame(&mut self) -> Frame {
         unsafe {
             if let Some(since) = self.shared.held_since
                 && since.elapsed() > MAX_HOLD
@@ -1789,6 +1907,78 @@ impl Drop for Vt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_trial_retains_complete_frame_until_ordered_matching_marker() {
+        let mut vt = Vt::new(20, 4);
+        vt.repaint_trial = Some(RepaintTrial::default());
+        vt.resize(20, 4, 8, 16);
+        vt.write(b"\x1b[2J\x1b[HOLD");
+        let before = vt.frame();
+        vt.resize(20, 8, 8, 16);
+        vt.write(b"\x1b[?2026h\x1b[2J\x1b[HNEW\x1b[?2026l\x1b[6n");
+        assert!(!vt.take_replies().is_empty());
+        assert_eq!((vt.cols, vt.rows), (20, 8));
+        assert!(vt.repaint_frozen());
+        assert!(vt.frame().rows == before.rows);
+        vt.write(b"\x1b]777;herdr-frame;20;4;1\x07");
+        assert!(vt.repaint_frozen());
+        for byte in b"\x1b]777;herdr-frame;20;8;2\x07" { vt.write(&[*byte]); }
+        assert!(!vt.repaint_frozen());
+        let complete = vt.frame();
+        assert_eq!(complete.rows.len(), 8);
+        assert!(complete.rows[0].iter().map(|c| c.text.as_str()).collect::<String>().starts_with("NEW"));
+        vt.resize(20, 10, 8, 16);
+        vt.write(b"\x1b]777;herdr-frame;20;10;2\x07");
+        assert!(vt.repaint_frozen());
+        vt.write(b"\x1b[2J\x1b[HCOMPLETE\x1b]777;herdr-frame;20;10;3\x07\x1b[?2026h\x1b[2J\x1b[HPARTIAL");
+        assert!(!vt.repaint_frozen());
+        assert!(vt.frame().rows[0].iter().map(|c| c.text.as_str()).collect::<String>().starts_with("COMPLETE"));
+        vt.resize(20, 12, 8, 16);
+        assert!(vt.repaint_frozen());
+        vt.expire_repaint_trial(Instant::now() + Duration::from_secs(1));
+        assert!(!vt.repaint_frozen());
+        vt.resize(20, 14, 8, 16);
+        assert!(vt.repaint_frozen());
+        vt.resize(20, 14, 9, 18);
+        assert!(!vt.repaint_frozen());
+    }
+
+    #[test]
+    fn resize_trial_retains_image_pixels_and_placements_until_completion() {
+        let mut vt = Vt::new(20, 5);
+        vt.repaint_trial = Some(RepaintTrial::default());
+        vt.resize(20, 5, 8, 16);
+        vt.write(b"\x1b_Ga=T,f=24,i=7,s=1,v=1,q=2;/wAA\x1b\\");
+        vt.frame();
+        let placements = vt.placements();
+        assert_eq!(placements.len(), 1);
+        let pixels = vt.image_bgra(7, placements[0].source).unwrap();
+        let cached = vt.repaint_trial.as_ref().unwrap().complete.as_ref().unwrap().images.values().next().unwrap().clone();
+        vt.frame();
+        assert!(Rc::ptr_eq(&cached, vt.repaint_trial.as_ref().unwrap().complete.as_ref().unwrap().images.values().next().unwrap()));
+        vt.resize(20, 10, 8, 16);
+        vt.write(b"\x1b_Ga=T,f=24,i=7,s=1,v=1,q=2;AAD/\x1b\\");
+        assert_eq!(vt.placements(), placements);
+        assert_eq!(vt.image_bgra(7, placements[0].source).unwrap(), pixels);
+        vt.write(b"\x1b]777;herdr-frame;20;10;1\x07");
+        assert!(!vt.repaint_frozen());
+        assert_ne!(vt.image_bgra(7, vt.placements()[0].source).unwrap(), pixels);
+    }
+
+    #[test]
+    fn resize_trial_off_keeps_the_existing_vt_feed_and_ignores_marker_display() {
+        let mut plain = Vt::new(20, 5);
+        let mut marked = Vt::new(20, 5);
+        plain.repaint_trial = None;
+        marked.repaint_trial = None;
+        plain.write(b"\x1b[?2026h\x1b[2J\x1b[HCOMPLETE\x1b[?2026lAFTER");
+        marked.write(b"\x1b[?2026h\x1b[2J\x1b[HCOMPLETE\x1b[?2026l\x1b]777;herdr-frame;20;5;1\x07AFTER");
+        assert!(plain.frame().rows == marked.frame().rows);
+        assert_eq!(plain.take_replies(), marked.take_replies());
+        assert!(!marked.repaint_frozen());
+        assert_eq!(marked.repaint_deadline(), None);
+    }
 
     fn finish_search(vt: &mut Vt) {
         for _ in 0..100_000 {
