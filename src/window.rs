@@ -3276,7 +3276,12 @@ impl AppWindow {
                 if let Some(enabled) = a.get("enabled").and_then(Value::as_bool) { preference.enabled = enabled; }
                 else if a.get("suspended").is_none() && a.get("force").is_none() { preference.enabled = !preference.enabled; }
                 if let Some(suspended) = a.get("suspended").and_then(Value::as_bool) { preference.suspended = suspended; }
-                let resume = preference.enabled && !preference.suspended;
+                let resume = preference.enabled && !preference.suspended && (
+                    a.get("force").and_then(Value::as_bool) == Some(true)
+                    || a.get("enabled").and_then(Value::as_bool) == Some(true)
+                    || a.get("suspended").and_then(Value::as_bool) == Some(false)
+                    || (a.get("suspended").is_none() && a.get("force").is_none())
+                );
                 self.reply = Some(json!({"enabled": preference.enabled, "suspended": preference.suspended}));
                 if resume { growth.resume(&id); }
             }

@@ -187,6 +187,58 @@ fn focus_growth_uses_render_focus_without_writing_shared_layouts() {
     in_own_process("focus_growth_render");
 }
 
+#[test]
+fn focus_growth_force_false_preserves_manual_resize() {
+    in_own_process("focus_growth_force_command");
+}
+
+#[gpui::test]
+fn focus_growth_force_command(cx: &mut gpui::TestAppContext) {
+    use serde_json::json;
+    if !running_alone("focus_growth_force_command") { return; }
+    let layout = json!({"id":"context","type":"block","content":{"tab":"active","pane":{"gap":6}}});
+    let (view, cx) = open_window(cx, "size-probe", "export default () => null;", layout);
+    view.update_in(cx, |this, window, cx| {
+        this.model = crate::model::Model::default();
+        let mut tab = super::Tab::new("tab", "", "a", "probe-a");
+        tab.root.split("a", super::Axis::Row, crate::model::pane("b", "probe-b"), "split1".into());
+        tab.root.split("b", super::Axis::Row, crate::model::pane("c", "probe-c"), "split2".into());
+        tab.focus("a");
+        this.model.add_space("space", "test", "/", tab);
+        this.person.focus_grow = true;
+        this.sync(window, cx);
+    });
+    for _ in 0..2 { cx.update(|window, cx| window.draw(cx).clear(cx)); }
+    view.update_in(cx, |this, window, cx| {
+        this.documents.entry(String::new()).or_default().available = true;
+        for (args, resumes) in [
+            (json!({"force":false}), false),
+            (json!({"force":true}), true),
+            (json!({"enabled":true,"force":false}), true),
+            (json!({"suspended":false,"force":false}), true),
+            (json!({"enabled":false,"force":true}), false),
+            (json!({"suspended":true,"force":true}), false),
+            (json!({}), false),
+        ] {
+            assert!(this.run_as("tab.focus_grow", json!({"enabled":true,"suspended":false}), false, window, cx).get("error").is_none());
+            this.grown_tab(this.model.active_tab().unwrap(), window).unwrap();
+            assert!(this.run_as("layout.resize", json!({"id":"b","weight":1.0}), false, window, cx).get("error").is_none());
+            let held = this.grown_tab(this.model.active_tab().unwrap(), window).unwrap();
+            let document = crate::mirror::Document::capture(&this.model, None);
+            let solves = this.growth.borrow().solves;
+            assert!(this.run_as("tab.focus_grow", args.clone(), false, window, cx).get("error").is_none());
+            let shown = this.grown_tab(this.model.active_tab().unwrap(), window).unwrap();
+            assert_eq!(this.growth.borrow().solves, solves + u64::from(resumes), "{args}");
+            if !resumes { assert!(std::rc::Rc::ptr_eq(&held, &shown), "{args}"); }
+            assert_eq!(crate::mirror::Document::capture(&this.model, None), document, "{args}");
+        }
+        let solves = this.growth.borrow().solves;
+        assert!(this.run_as("tab.focus_grow", json!({}), false, window, cx).get("error").is_none());
+        this.grown_tab(this.model.active_tab().unwrap(), window).unwrap();
+        assert_eq!(this.growth.borrow().solves, solves + 1);
+    });
+}
+
 #[gpui::test]
 fn focus_growth_render(cx: &mut gpui::TestAppContext) {
     use serde_json::json;
