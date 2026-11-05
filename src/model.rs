@@ -262,12 +262,11 @@ impl Model {
         self.active = Some(id.to_owned());
     }
 
-    /// Adds a tab after the space's selected one and selects it (not the space).
+    /// Adds a tab at the end of the space and selects it (not the space).
     pub fn add_tab(&mut self, space: &str, ctx: Tab) -> bool {
         let Some(p) = self.space_mut(space) else { return false };
-        let at = p.active.as_deref().and_then(|a| p.tabs.iter().position(|c| c.id == a)).map_or(p.tabs.len(), |i| i + 1);
         let id = ctx.id.clone();
-        p.tabs.insert(at, ctx);
+        p.tabs.push(ctx);
         p.active = Some(id);
         true
     }
@@ -926,13 +925,13 @@ mod tests {
     }
 
     #[test]
-    fn new_tabs_go_after_the_selected_one() {
+    fn new_tabs_go_at_the_end() {
         let mut m = model_with_one();
         m.add_tab("p1", Tab::new("c2", "b", "x2", "t2"));
         m.select_tab("c1");
         m.add_tab("p1", Tab::new("c3", "c", "x3", "t3"));
         let order: Vec<&str> = m.spaces[0].tabs.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(order, ["c1", "c3", "c2"]);
+        assert_eq!(order, ["c1", "c2", "c3"]);
         assert_eq!(m.active_tab().map(|c| c.id.as_str()), Some("c3"));
     }
 
