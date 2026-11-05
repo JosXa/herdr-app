@@ -85,9 +85,8 @@ struct Grid {
     painted: Vec<(Rc<Vec<vt::Cell>>, Vec<RowOp>, Option<usize>)>,
     /// Font size, cell size, font, loaded fonts and ligature setting used to draw.
     painted_with: (u32, Size<Pixels>, String, u64, bool),
-    resize: crate::resize_trial::Schedule,
-    trial_timer: Option<Task<()>>,
-    trial_deadline: Option<Instant>,
+    repaint_timer: Option<Task<()>>,
+    repaint_deadline: Option<Instant>,
 }
 
 pub struct TerminalView {
@@ -178,25 +177,17 @@ impl Grid {
     }
 
     /// Sizes the screen to `cols` x `rows` of `cell` at `scale`; the program hears of a change.
-    fn fit(&mut self, cols: u16, rows: u16, cell: Size<Pixels>, scale: f32, immediate: bool) {
+    fn fit(&mut self, cols: u16, rows: u16, cell: Size<Pixels>, scale: f32, hidden: bool) {
         let metrics_changed = cell != self.cell || scale != self.scale;
-        if metrics_changed { self.cancel_trial(); }
+        if metrics_changed || hidden { self.cancel_repaint(); }
         self.cell = cell;
         self.scale = scale;
         let dev = device_cell(cell, scale);
         // Before the size, so a program woken by it asks for the new cell.
         self.refresh_theme(&vt::theme(), dev);
-        if immediate { self.cancel_trial(); }
         if (cols, rows) == (self.vt.cols, self.vt.rows) && dev == self.vt_cell {
-            self.resize.cancel();
             return;
         }
-        if !self.resize.request((cols, rows), (self.vt.cols, self.vt.rows), Instant::now(), immediate || metrics_changed || dev != self.vt_cell) { return; }
-        self.apply_resize(cols, rows, dev);
-        if immediate { self.vt.cancel_repaint_trial(); }
-    }
-
-    fn apply_resize(&mut self, cols: u16, rows: u16, dev: (u32, u32)) {
         self.vt.resize(cols, rows, dev.0, dev.1);
         self.vt_cell = dev;
         if let Some(chan) = self.channel {
@@ -208,15 +199,10 @@ impl Grid {
         }
     }
 
-    fn cancel_trial(&mut self) {
-        self.resize.cancel();
-        self.vt.cancel_repaint_trial();
-        self.trial_timer = None;
-        self.trial_deadline = None;
-    }
-
-    fn trial_deadline(&self) -> Option<Instant> {
-        self.resize.deadline().into_iter().chain(self.vt.repaint_deadline()).min()
+    fn cancel_repaint(&mut self) {
+        self.vt.cancel_repaint();
+        self.repaint_timer = None;
+        self.repaint_deadline = None;
     }
 }
 
@@ -277,9 +263,8 @@ impl TerminalView {
                 track: None,
                 painted: Vec::new(),
                 painted_with: (0, Size::default(), String::new(), 0, false),
-                resize: crate::resize_trial::Schedule::new(crate::resize_trial::config().interval),
-                trial_timer: None,
-                trial_deadline: None,
+                repaint_timer: None,
+                repaint_deadline: None,
             })),
             focus: cx.focus_handle(),
             was_focused: false,
@@ -320,7 +305,7 @@ impl TerminalView {
     fn connect(&mut self, core: Arc<Core>, announce_end: bool, cx: &mut Context<Self>) {
         let (cols, rows, facts) = {
             let mut g = self.grid.borrow_mut();
-            g.cancel_trial();
+            g.cancel_repaint();
             let (cols, rows) = (g.vt.cols, g.vt.rows);
             // The core repaints the whole screen (and history) on attach.
             let cell = device_cell(g.cell, g.scale);
@@ -450,7 +435,7 @@ impl TerminalView {
 
     pub fn detach(&self) {
         let mut g = self.grid.borrow_mut();
-        g.cancel_trial();
+        g.cancel_repaint();
         if let Some(ch) = g.channel {
             g.core.detach(ch);
         }
@@ -486,13 +471,13 @@ impl TerminalView {
                         }
                     }
                     Stream::Closed(why) => {
-                        g.cancel_trial();
+                        g.cancel_repaint();
                         open = false;
                         g.channel = None;
                         self.ended = Some(why.get("reason").and_then(|r| r.as_str()).unwrap_or("ended").to_owned());
                     }
                     Stream::Lost => {
-                        g.cancel_trial();
+                        g.cancel_repaint();
                         g.channel = None;
                         self.lost = true;
                         cx.notify();
@@ -554,26 +539,22 @@ impl TerminalView {
         self.grid.borrow_mut().fit(cols, rows, cell, scale, true);
     }
 
-    fn arm_trial_timer(&mut self, cx: &mut Context<Self>) {
+    fn arm_repaint_timer(&mut self, cx: &mut Context<Self>) {
         let mut grid = self.grid.borrow_mut();
-        let deadline = grid.trial_deadline();
-        if deadline == grid.trial_deadline { return; }
-        grid.trial_timer = None;
-        grid.trial_deadline = deadline;
+        let deadline = grid.vt.repaint_deadline();
+        if deadline == grid.repaint_deadline { return; }
+        grid.repaint_timer = None;
+        grid.repaint_deadline = deadline;
         let Some(deadline) = deadline else { return };
-        grid.trial_timer = Some(cx.spawn(async move |this, cx| {
+        grid.repaint_timer = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(deadline.saturating_duration_since(Instant::now())).await;
             let _ = this.update(cx, |this, cx| {
                 {
                     let mut grid = this.grid.borrow_mut();
-                    grid.trial_deadline = None;
-                    if let Some((cols, rows)) = grid.resize.take_due(Instant::now()) {
-                        let dev = device_cell(grid.cell, grid.scale);
-                        grid.apply_resize(cols, rows, dev);
-                    }
-                    grid.vt.expire_repaint_trial(Instant::now());
+                    grid.repaint_deadline = None;
+                    grid.vt.expire_repaint(Instant::now());
                 }
-                this.arm_trial_timer(cx);
+                this.arm_repaint_timer(cx);
                 cx.notify();
             });
         }));
@@ -2015,7 +1996,7 @@ impl Render for TerminalView {
                     move |bounds, window, cx| {
                         let (cols, rows) = grid_size(bounds.size, cell);
                         grid.borrow_mut().fit(cols, rows, cell, window.scale_factor(), false);
-                        let _ = resize_view.update(cx, |this, cx| this.arm_trial_timer(cx));
+                        let _ = resize_view.update(cx, |this, cx| this.arm_repaint_timer(cx));
                     },
                     move |bounds, _, window, cx| {
                         if grid_paint.borrow().vt.repaint_frozen() {
