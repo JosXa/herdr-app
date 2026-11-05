@@ -797,7 +797,10 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
 
 ## Completed terminal frames
 
-Cooperating TUIs can keep their last completed frame visible while a pane resizes.
+Cooperating TUIs can keep their last completed frame visible while the grid's row
+count changes. A column-count change clears retention so live text reflow and
+input coordinates stay aligned. A fresh matching completion at the new width
+can enable retention for later row-count changes.
 Emit `ESC ]777;herdr-frame;TOKEN;COLS;ROWS;FRAME_ID BEL` synchronously on the same
 PTY stdout after the completed frame's bytes, including its synchronized-output
 reset. Use the accepted renderer dimensions. `TOKEN` is a fresh 32-character

@@ -1280,7 +1280,7 @@ impl Vt {
         }
         if self.repaint.gate.active() {
             let cell_changed = self.shared.size.cell_width != cell_w || self.shared.size.cell_height != cell_h;
-            if cell_changed {
+            if cell_changed || cols != self.cols {
                 self.cancel_repaint();
             } else if (cols, rows) != (self.cols, self.rows) {
                 self.repaint.gate.begin(Instant::now());
@@ -1936,6 +1936,49 @@ mod tests {
         assert!(!vt.repaint_frozen());
         vt.resize(20, 18, 9, 18);
         assert!(!vt.repaint_frozen());
+    }
+
+    #[test]
+    fn completed_frame_column_changes_restore_live_reflow_and_rearm_height_retention() {
+        let mut vt = Vt::new(20, 4);
+        let mut plain = Vt::new(20, 4);
+        for terminal in [&mut vt, &mut plain] {
+            terminal.resize(20, 4, 8, 16);
+            terminal.write(b"\x1b[2J\x1b[H0123456789SYNTHETIC_VALUE");
+        }
+        vt.write(b"\x1b]777;herdr-frame;0123456789abcdef0123456789abcdef;20;4;0\x07");
+        vt.resize(20, 8, 8, 16);
+        plain.resize(20, 8, 8, 16);
+        assert!(vt.repaint_frozen());
+        assert!(vt.repaint_deadline().is_some());
+        assert_eq!(vt.frame().rows.len(), 4);
+
+        vt.resize(12, 8, 8, 16);
+        plain.resize(12, 8, 8, 16);
+        assert!(!vt.repaint_frozen());
+        assert!(!vt.repaint.gate.active());
+        assert!(vt.repaint.complete.is_none());
+        assert_eq!(vt.repaint_deadline(), None);
+        assert_eq!((vt.cols, vt.rows), (12, 8));
+        assert!(vt.frame().rows == plain.frame().rows);
+        for terminal in [&mut vt, &mut plain] {
+            terminal.write(b"\x1b[2J\x1b[HLIVE_REFLOW");
+        }
+        assert!(vt.frame().rows == plain.frame().rows);
+
+        vt.write(b"\x1b]777;herdr-frame;0123456789abcdef0123456789abcdef;12;8;1\x07");
+        vt.resize(12, 10, 8, 16);
+        assert!(vt.repaint_frozen());
+        assert!(vt.repaint_deadline().is_some());
+        assert_eq!(vt.frame().rows.len(), 8);
+        vt.write(b"\x1b]777;herdr-frame;0123456789abcdef0123456789abcdef;12;10;2\x07");
+        assert!(!vt.repaint_frozen());
+        assert!(vt.repaint.gate.active());
+        vt.resize(30, 10, 8, 16);
+        assert!(!vt.repaint_frozen());
+        assert!(!vt.repaint.gate.active());
+        assert!(vt.repaint.complete.is_none());
+        assert_eq!(vt.repaint_deadline(), None);
     }
 
     #[test]
