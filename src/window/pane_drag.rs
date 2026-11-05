@@ -7,6 +7,7 @@ pub(super) struct PaneDrag {
     pane: String,
     tab: String,
     down: Point<Pixels>,
+    at: Point<Pixels>,
     moving: bool,
     target: Option<(String, Option<Edge>)>,
     mod_target: Option<(String, String, Bounds<Pixels>)>,
@@ -22,6 +23,19 @@ fn drop_zone(bounds: Bounds<Pixels>, at: Point<Pixels>) -> Option<Option<Edge>> 
     let (distance, edge) = [(x, Edge::Left), (1. - x, Edge::Right), (y, Edge::Top), (1. - y, Edge::Bottom)]
         .into_iter().min_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
     Some((distance < 0.25).then_some(edge))
+}
+
+/// Where a tab dropped on `target`'s left or right half lands (1-based), or None when it stays put.
+fn tab_drop_index(tabs: &[&str], source: &str, target: &str, after: bool) -> Option<usize> {
+    if source == target { return None; }
+    let target_at = tabs.iter().position(|t| *t == target)?;
+    let source_at = tabs.iter().position(|t| *t == source);
+    let landing = target_at - usize::from(source_at.is_some_and(|s| s < target_at)) + usize::from(after);
+    (source_at != Some(landing)).then_some(landing + 1)
+}
+
+fn drops_after(bounds: Bounds<Pixels>, at: Point<Pixels>) -> bool {
+    at.x >= bounds.origin.x + bounds.size.width / 2.
 }
 
 /// The top row of a pane without a top header.
@@ -44,7 +58,7 @@ impl AppWindow {
             self.pane_press(id, at, cx);
         } else if kind == "tab" && self.model.tab(id).is_some()
             && self.require_document(self.model.space_of(id).and_then(|s| s.machine.as_deref())).is_ok() {
-            self.pane_drag = Some(PaneDrag { whole_tab: true, pane: id.into(), tab: id.into(), down: at, moving: false, target: None, mod_target: None });
+            self.pane_drag = Some(PaneDrag { whole_tab: true, pane: id.into(), tab: id.into(), down: at, at, moving: false, target: None, mod_target: None });
             cx.notify();
         }
     }
@@ -122,7 +136,7 @@ impl AppWindow {
             self.pane_drag = Some(PaneDrag {
                 whole_tab: false, mod_target: None,
                 pane: pane.to_owned(), tab: self.model.tab_of(pane).unwrap().id.clone(),
-                down: at, moving: false, target: None,
+                down: at, at, moving: false, target: None,
             });
             cx.notify();
         }
@@ -147,6 +161,7 @@ impl AppWindow {
             return;
         }
         d.moving = true;
+        d.at = at;
         if d.mod_target.as_ref().is_some_and(|(_, _, b)| !b.contains(&at)) { d.mod_target = None; }
         let target = self.pane_target(at);
         self.pane_drag.as_mut().unwrap().target = target;
@@ -166,12 +181,14 @@ impl AppWindow {
             cx.notify();
             return false;
         }
-        if let Some((kind, id, _)) = d.mod_target.filter(|(_, _, bounds)| bounds.contains(&at)) {
+        if let Some((kind, id, bounds)) = d.mod_target.filter(|(_, _, bounds)| bounds.contains(&at)) {
             if d.whole_tab {
-                let destination = if kind == "space" { Some(id.clone()) } else { self.model.space_of(&id).map(|s| s.id.clone()) };
-                if let Some(space) = destination {
-                    let index = (kind == "tab").then(|| self.model.space(&space).and_then(|s| s.tabs.iter().position(|t| t.id == id)).map(|i| i + 1)).flatten();
-                    self.run("tab.move", json!({"id":d.pane,"space":space,"index":index}), window, cx);
+                if kind == "tab" {
+                    if let Some((space, index)) = self.tab_drop(&d.pane, &id, drops_after(bounds, at)) {
+                        self.run("tab.move", json!({"id":d.pane,"space":space,"index":index}), window, cx);
+                    }
+                } else if self.model.space(&id).is_some() {
+                    self.run("tab.move", json!({"id":d.pane,"space":id}), window, cx);
                 }
             } else {
                 let key = if kind == "pane" { "target" } else { &kind };
@@ -186,10 +203,25 @@ impl AppWindow {
         true
     }
 
+    fn tab_drop(&self, source: &str, target: &str, after: bool) -> Option<(String, usize)> {
+        let space = self.model.space_of(target)?;
+        let tabs: Vec<&str> = space.tabs.iter().map(|t| t.id.as_str()).collect();
+        Some((space.id.clone(), tab_drop_index(&tabs, source, target, after)?))
+    }
+
     pub(super) fn pane_drag_layer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mod_preview = self.pane_drag.as_ref().filter(|d| d.moving).and_then(|d| d.mod_target.as_ref()).map(|(_, _, b)| {
-            div().absolute().left(b.origin.x).top(b.origin.y).w(b.size.width).h(b.size.height)
-                .bg(c("accent").opacity(0.18)).border_2().border_color(c("accent")).into_any_element()
+        let mod_preview = self.pane_drag.as_ref().filter(|d| d.moving).and_then(|d| {
+            let (kind, id, b) = d.mod_target.as_ref()?;
+            if d.whole_tab && kind == "tab" {
+                let after = drops_after(*b, d.at);
+                self.tab_drop(&d.pane, id, after)?;
+                let edge = if after { b.origin.x + b.size.width } else { b.origin.x };
+                let inset = b.size.height * 0.15;
+                return Some(div().absolute().left(edge - settings::z(1.5)).top(b.origin.y + inset)
+                    .w(settings::z(3.)).h(b.size.height - inset * 2.).rounded_full().bg(c("accent")).into_any_element());
+            }
+            Some(div().absolute().left(b.origin.x).top(b.origin.y).w(b.size.width).h(b.size.height)
+                .bg(c("accent").opacity(0.18)).border_2().border_color(c("accent")).into_any_element())
         });
         let preview = mod_preview.or_else(|| self.pane_drag.as_ref().and_then(|d| d.target.as_ref()).and_then(|(id, edge)| {
             let mut b = *self.bounds.borrow().get(id)?;
@@ -240,7 +272,7 @@ fn event_bounds(event: &Value) -> Option<Bounds<Pixels>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{STRIP, drop_zone, inherited_movable, top_strip};
+    use super::{STRIP, drop_zone, inherited_movable, tab_drop_index, top_strip};
     use crate::layout::{Axis, Content, Edge, Node};
     use gpui::{Bounds, point, px, size};
     #[test]
@@ -250,6 +282,18 @@ mod tests {
             (890., 400., Some(Some(Edge::Right))), (500., 210., Some(Some(Edge::Top))),
             (500., 590., Some(Some(Edge::Bottom))), (99., 400., None)] {
             assert_eq!(drop_zone(b, point(px(x), px(y))), expected);
+        }
+    }
+    #[test]
+    fn tab_drops_land_on_the_hovered_side_and_skip_no_ops() {
+        let tabs = ["a", "b", "c", "d"];
+        for (source, target, after, expected) in [
+            ("a", "c", false, Some(2)), ("a", "c", true, Some(3)), ("d", "b", false, Some(2)),
+            ("d", "b", true, Some(3)), ("a", "d", true, Some(4)), ("d", "a", false, Some(1)),
+            ("b", "c", false, None), ("c", "b", true, None), ("b", "b", true, None),
+            ("x", "b", false, Some(2)), ("x", "d", true, Some(5)),
+        ] {
+            assert_eq!(tab_drop_index(&tabs, source, target, after), expected, "{source} on {target} after={after}");
         }
     }
     #[test]

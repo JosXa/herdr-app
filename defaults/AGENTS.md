@@ -259,7 +259,8 @@ Properties any node can have:
   from `on_mouse_move` on destination rows. The app owns the drag until release or Escape;
   it requires a four-pixel move before dropping and uses the destination event's bounds.
   A tab dropped on a space moves intact. A pane becomes a new tab there. Drops on tabs
-  put a tab at that tab's position, or add a pane beside its focused pane. Moves stay on the
+  put a tab before or after that tab, by the hovered half, which an insertion bar marks;
+  a pane drop adds the pane beside the tab's focused pane. Moves stay on the
   same machine, including between remote spaces. `panes()` exposes `movable`.
   Middle-clicking a pane header or grip closes that pane, including an unfocused pane.
   Mouse Back and Forward traverse actual keyboard visits across tabs and spaces from terminals or the sidebar. History survives app restarts in the saved view. Closed panes are skipped; visiting another pane clears Forward.
