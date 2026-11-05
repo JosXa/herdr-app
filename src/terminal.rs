@@ -816,14 +816,14 @@ impl TerminalView {
         self.grid.borrow().vt.mouse_tracking() && !mods.shift
     }
 
-    /// Sends a mouse event to a program that tracks the mouse. Returns whether it did
-    /// (shift keeps the mouse for Herdr: selecting, the menu).
     fn mouse(&mut self, action: GhosttyMouseAction, button: Option<MouseButton>, pos: Point<Pixels>, mods: Modifiers) -> bool {
         let mut g = self.grid.borrow_mut();
+        let pass_right_click = !crate::settings::get().terminal_context_menu
+            && (button == Some(MouseButton::Right) || (button.is_none() && g.buttons_down.contains(&MouseButton::Right)));
         if !track_mouse_button(&mut g.buttons_down, action, button) {
             return false;
         }
-        if !g.vt.mouse_tracking() || mods.shift {
+        if !g.vt.mouse_tracking() || (mods.shift && !pass_right_click) {
             return false;
         }
         let b = button.map(|b| match b {
@@ -1923,12 +1923,9 @@ impl Render for TerminalView {
                     this.start_selection(ev.position, cx);
                 }
             }))
-            // Right-click is Herdr's menu, even when the program tracks the mouse
-            // (agent TUIs do, and then a pane had no menu at all), unless the pane
-            // sends right-clicks to its program.
             .on_mouse_down(MouseButton::Right, cx.listener(|this, ev: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
-                if this.right_click_to_program && this.takes_mouse(ev.modifiers) {
+                if !crate::settings::get().terminal_context_menu || (this.right_click_to_program && this.takes_mouse(ev.modifiers)) {
                     this.mouse(GHOSTTY_MOUSE_ACTION_PRESS, Some(ev.button), ev.position, ev.modifiers);
                 } else {
                     cx.emit(TerminalEvent::ContextMenu(ev.position));
@@ -2122,6 +2119,57 @@ impl Focusable for TerminalView {
 mod tests {
     use super::{ScrollTarget, pages_to_lines, scroll_target};
     use serde_json::{Value, json};
+
+    #[gpui::test]
+    fn disabled_terminal_context_menu_passes_right_clicks(cx: &mut gpui::TestAppContext) {
+        use gpui::*;
+        use std::{cell::Cell, rc::Rc};
+
+        let person = serde_json::from_value(json!({"terminal_context_menu": false})).unwrap();
+        crate::settings::set(crate::settings::Settings::compose(&person, &Default::default(), true));
+        let menus = Rc::new(Cell::new(0));
+        let observed = menus.clone();
+        let (terminal, cx) = cx.add_window_view(|_, cx| {
+            let view = super::TerminalView::attach(crate::hc::offline(), "t1".into(), (40, 5), cx);
+            cx.subscribe(&cx.entity(), move |_, _, event: &super::TerminalEvent, _| {
+                if matches!(event, super::TerminalEvent::ContextMenu(_)) {
+                    observed.set(observed.get() + 1);
+                }
+            }).detach();
+            view
+        });
+        cx.run_until_parked();
+        let position = point(px(50.), px(50.));
+        for tracking in [false, true] {
+            terminal.update(cx, |terminal, cx| {
+                terminal.grid.borrow_mut().vt.write(if tracking { b"\x1b[?1000h\x1b[?1006h" } else { b"\x1b[?1000l" });
+                cx.notify();
+            });
+            cx.run_until_parked();
+            for shift in [false, true] {
+                let modifiers = Modifiers { shift, ..Default::default() };
+                cx.simulate_mouse_down(position, MouseButton::Right, modifiers);
+                cx.simulate_mouse_up(position, MouseButton::Right, modifiers);
+                cx.run_until_parked();
+                assert_eq!(menus.get(), 0);
+                terminal.update(cx, |terminal, _| {
+                    assert!(terminal.grid.borrow().buttons_down.is_empty());
+                    assert_eq!(terminal.mouse(ghostty_sys::GHOSTTY_MOUSE_ACTION_PRESS, Some(MouseButton::Right), position, modifiers), tracking);
+                    assert_eq!(terminal.mouse(ghostty_sys::GHOSTTY_MOUSE_ACTION_MOTION, None, position, modifiers), tracking);
+                    terminal.mouse(ghostty_sys::GHOSTTY_MOUSE_ACTION_RELEASE, Some(MouseButton::Right), position, modifiers);
+                    if shift {
+                        assert!(!terminal.mouse(ghostty_sys::GHOSTTY_MOUSE_ACTION_PRESS, Some(MouseButton::Left), position, modifiers));
+                        terminal.mouse(ghostty_sys::GHOSTTY_MOUSE_ACTION_RELEASE, Some(MouseButton::Left), position, modifiers);
+                    }
+                });
+            }
+        }
+        crate::settings::set(Default::default());
+        cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(menus.get(), 1);
+    }
 
     #[test]
     fn terminal_text_uses_regular_weight_unless_bold() {
