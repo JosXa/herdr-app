@@ -747,6 +747,10 @@ What's about the user, never a look:
   pane's right edge (default `true`). It shows only when the pane has
   scrollback — never on the alternate screen (editors, pagers) — and
   drags to move through it.
+- `terminal_context_menu`: `false` sends right-clicks to terminal programs that
+  track the mouse, including Shift+right-click, in every pane (default `true`).
+  Herdr's terminal menu stays closed even when the program does not track the
+  mouse. This overrides `terminal.right_click` and preserves Shift+left selection.
 - `telemetry`: `false` stops anonymous usage data and deletes what wasn't
   sent (on when absent; Settings → Privacy shows each report word for
   word, and `telemetry()` in mods). Once a day the app sends counts:
