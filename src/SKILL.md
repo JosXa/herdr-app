@@ -104,6 +104,8 @@ Read the generated `.d.ts` files beside it for full API details; do not edit
 those files or the generated guide. The app rewrites them on start.
 
 - Home defaults to `~/.config/herdr-app`; `HERDR_APP_HOME` selects another.
+- Set `terminal_context_menu: false` in `settings.json` to pass all right-clicks
+  to panes, including Shift+right-click. See the installed guide for mouse tracking.
 - Mods live in `mods/<name>/` with `main.js` and optional `mod.json`.
   They are trusted JavaScript with command and network access.
   `"focusable": true` in `mod.json` lets `pane.go` move onto a copy; it receives
