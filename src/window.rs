@@ -3804,7 +3804,7 @@ impl AppWindow {
     fn handle(&mut self, req: Request, window: &mut Window, cx: &mut Context<Self>) {
         match req {
             Request::BeginDrag { kind, id, event } => { self.begin_mod_drag(&kind, &id, &event, cx); }
-            Request::DragTarget { kind, id, event } => { self.mod_drag_target(&kind, &id, &event, cx); }
+            Request::DragTarget { kind, id, event, vertical } => { self.mod_drag_target(&kind, &id, &event, vertical, cx); }
             Request::Run { name, args } => self.run(&name, args, window, cx),
             Request::OpenOverlay { id, spec } => self.open_overlay(id, spec, window, cx),
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),

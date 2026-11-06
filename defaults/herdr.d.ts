@@ -81,7 +81,10 @@ export function playSound(sound: string): null;
 export function run(name: string, args?: Record<string, unknown>): null;
 
 export function beginDrag(kind: "tab" | "pane", id: string, event: import("gpui-kit").MouseButtonEvent): null;
-export function dragTarget(kind: "space" | "tab" | "pane", id: string, event: import("gpui-kit").MouseMoveEvent): null;
+/** Reports the drop target under a native drag. Vertical targets sit in a top-to-bottom list:
+ * the hovered half picks the line above or below the row. A tab or pane dropped on a space lands first in it,
+ * a pane dropped on a tab joins that tab, and a pane dropped on a pane lands before or after it. */
+export function dragTarget(kind: "space" | "tab" | "pane", id: string, event: import("gpui-kit").MouseMoveEvent, options?: { orientation?: "horizontal" | "vertical" }): null;
 
 export type Status = "working" | "blocked" | "done" | "idle";
 

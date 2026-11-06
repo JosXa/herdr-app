@@ -1,6 +1,6 @@
 //! App-owned pane grips and drag gestures, independent of header mods.
 use super::*;
-use crate::layout::Edge;
+use crate::layout::{Axis, Edge};
 
 pub(super) struct PaneDrag {
     whole_tab: bool,
@@ -10,7 +10,24 @@ pub(super) struct PaneDrag {
     at: Point<Pixels>,
     moving: bool,
     target: Option<(String, Option<Edge>)>,
-    mod_target: Option<(String, String, Bounds<Pixels>)>,
+    mod_target: Option<ModTarget>,
+}
+
+/// A space, tab or pane a mod reported under the pointer; `vertical` targets sit in a top-to-bottom list.
+struct ModTarget {
+    kind: String,
+    id: String,
+    bounds: Bounds<Pixels>,
+    vertical: bool,
+}
+
+/// What dropping on a mod target runs. `after` picks the target side its line marks;
+/// `first` moves the tab a pane drop creates to the top of its space.
+struct ModDrop {
+    command: &'static str,
+    args: Value,
+    after: bool,
+    first: bool,
 }
 
 /// The outer quarter of a pane chooses its nearest edge; the middle swaps.
@@ -34,8 +51,42 @@ fn tab_drop_index(tabs: &[&str], source: &str, target: &str, after: bool) -> Opt
     (source_at != Some(landing)).then_some(landing + 1)
 }
 
-fn drops_after(bounds: Bounds<Pixels>, at: Point<Pixels>) -> bool {
-    at.x >= bounds.origin.x + bounds.size.width / 2.
+fn drops_after(bounds: Bounds<Pixels>, at: Point<Pixels>, vertical: bool) -> bool {
+    if vertical { at.y >= bounds.origin.y + bounds.size.height / 2. } else { at.x >= bounds.origin.x + bounds.size.width / 2. }
+}
+
+/// The edge that puts a pane before or after `target` in the reading order of its split.
+fn sibling_edge(parent: Option<Axis>, after: bool) -> Edge {
+    match (parent, after) {
+        (Some(Axis::Column), false) => Edge::Top,
+        (Some(Axis::Column), true) => Edge::Bottom,
+        (_, false) => Edge::Left,
+        (_, true) => Edge::Right,
+    }
+}
+
+fn edge_name(edge: Edge) -> &'static str {
+    match edge { Edge::Left => "left", Edge::Right => "right", Edge::Top => "top", Edge::Bottom => "bottom" }
+}
+
+/// An accent line on the drop side of a target: across a vertical list's row, or upright between horizontal tabs.
+fn drop_line(b: Bounds<Pixels>, after: bool, vertical: bool) -> AnyElement {
+    let thickness = settings::z(3.);
+    let line = div().absolute().rounded_full().bg(c("accent"));
+    if vertical {
+        let inset = (b.size.width * 0.15).min(settings::z(6.));
+        let edge = if after { b.origin.y + b.size.height } else { b.origin.y };
+        line.left(b.origin.x + inset).top(edge - thickness / 2.).w(b.size.width - inset * 2.).h(thickness).into_any_element()
+    } else {
+        let inset = b.size.height * 0.15;
+        let edge = if after { b.origin.x + b.size.width } else { b.origin.x };
+        line.left(edge - thickness / 2.).top(b.origin.y + inset).w(thickness).h(b.size.height - inset * 2.).into_any_element()
+    }
+}
+
+fn drop_box(b: Bounds<Pixels>) -> AnyElement {
+    div().absolute().left(b.origin.x).top(b.origin.y).w(b.size.width).h(b.size.height)
+        .bg(c("accent").opacity(0.18)).border_2().border_color(c("accent")).into_any_element()
 }
 
 /// The top row of a pane without a top header.
@@ -63,14 +114,14 @@ impl AppWindow {
         }
     }
 
-    pub(super) fn mod_drag_target(&mut self, kind: &str, id: &str, event: &Value, cx: &mut Context<Self>) {
+    pub(super) fn mod_drag_target(&mut self, kind: &str, id: &str, event: &Value, vertical: bool, cx: &mut Context<Self>) {
         let Some(drag) = self.pane_drag.as_ref() else { return };
         let source = self.model.space_of(&drag.pane);
         let target = if kind == "space" { self.model.space(id) } else if matches!(kind, "tab" | "pane") { self.model.space_of(id) } else { None };
         if source.zip(target).is_none_or(|(a, b)| a.machine != b.machine) { return; }
         if kind == "pane" && event_point(event).and_then(|at| self.pane_target(at)).is_some_and(|(pane, _)| pane == id) { return; }
         let Some(bounds) = event_bounds(event) else { return };
-        self.pane_drag.as_mut().unwrap().mod_target = Some((kind.into(), id.into(), bounds));
+        self.pane_drag.as_mut().unwrap().mod_target = Some(ModTarget { kind: kind.into(), id: id.into(), bounds, vertical });
         cx.notify();
     }
 
@@ -157,7 +208,7 @@ impl AppWindow {
         }
         d.moving = true;
         d.at = at;
-        if d.mod_target.as_ref().is_some_and(|(_, _, b)| !b.contains(&at)) { d.mod_target = None; }
+        if d.mod_target.as_ref().is_some_and(|t| !t.bounds.contains(&at)) { d.mod_target = None; }
         let target = self.pane_target(at);
         self.pane_drag.as_mut().unwrap().target = target;
         cx.notify();
@@ -176,21 +227,15 @@ impl AppWindow {
             cx.notify();
             return false;
         }
-        if let Some((kind, id, bounds)) = d.mod_target.filter(|(_, _, bounds)| bounds.contains(&at)) {
-            if d.whole_tab {
-                if kind == "tab" {
-                    if let Some((space, index)) = self.tab_drop(&d.pane, &id, drops_after(bounds, at)) {
-                        self.run("tab.move", json!({"id":d.pane,"space":space,"index":index}), window, cx);
-                    }
-                } else if self.model.space(&id).is_some() {
-                    self.run("tab.move", json!({"id":d.pane,"space":id}), window, cx);
+        if let Some(target) = d.mod_target.as_ref().filter(|t| t.bounds.contains(&at)) {
+            if let Some(drop) = self.mod_drop(&d, target, at) {
+                self.run(drop.command, drop.args, window, cx);
+                if drop.first && let Some(tab) = self.model.tab_of(&d.pane).map(|t| t.id.clone()) {
+                    self.run("tab.move", json!({"id":tab,"index":1}), window, cx);
                 }
-            } else {
-                let key = if kind == "pane" { "target" } else { &kind };
-                self.run("pane.move", json!({"pane":d.pane,key:id}), window, cx);
             }
         } else if !d.whole_tab && self.pane_movable(&d.pane) && let Some((target, edge)) = target {
-            let edge = edge.map(|e| match e { Edge::Left => "left", Edge::Right => "right", Edge::Top => "top", Edge::Bottom => "bottom" });
+            let edge = edge.map(edge_name);
             self.run("pane.move", json!({"pane":d.pane,"target":target,"edge":edge}), window, cx);
         }
         cx.defer_in(window, |this, window, cx| this.restore_focus(window, cx));
@@ -204,19 +249,39 @@ impl AppWindow {
         Some((space.id.clone(), tab_drop_index(&tabs, source, target, after)?))
     }
 
+    fn mod_drop(&self, d: &PaneDrag, target: &ModTarget, at: Point<Pixels>) -> Option<ModDrop> {
+        let ModTarget { kind, id, bounds, vertical } = target;
+        let after = drops_after(*bounds, at, *vertical);
+        let drop = |command, args, after| Some(ModDrop { command, args, after, first: false });
+        match (d.whole_tab, kind.as_str()) {
+            (true, "tab") => {
+                let (space, index) = self.tab_drop(&d.pane, id, after)?;
+                drop("tab.move", json!({"id":d.pane,"space":space,"index":index}), after)
+            }
+            (true, "space") if *vertical => {
+                let space = self.model.space(id)?;
+                if space.tabs.first().is_some_and(|t| t.id == d.pane) { return None; }
+                drop("tab.move", json!({"id":d.pane,"space":id,"index":1}), true)
+            }
+            (true, "space") => drop("tab.move", json!({"id":d.pane,"space":self.model.space(id)?.id}), true),
+            (true, _) => None,
+            (false, "pane") if *vertical => {
+                if *id == d.pane { return None; }
+                let parent = self.model.tab_of(id)?.root.parent_of(id).and_then(Node::axis);
+                drop("pane.move", json!({"pane":d.pane,"target":id,"edge":edge_name(sibling_edge(parent, after))}), after)
+            }
+            (false, "pane") => drop("pane.move", json!({"pane":d.pane,"target":id}), true),
+            (false, "space") => Some(ModDrop { command: "pane.move", args: json!({"pane":d.pane,"space":id}), after: true, first: *vertical }),
+            (false, _) => drop("pane.move", json!({"pane":d.pane,kind.as_str():id}), true),
+        }
+    }
+
     pub(super) fn pane_drag_layer(&self, cx: &mut Context<Self>) -> AnyElement {
         let mod_preview = self.pane_drag.as_ref().filter(|d| d.moving).and_then(|d| {
-            let (kind, id, b) = d.mod_target.as_ref()?;
-            if d.whole_tab && kind == "tab" {
-                let after = drops_after(*b, d.at);
-                self.tab_drop(&d.pane, id, after)?;
-                let edge = if after { b.origin.x + b.size.width } else { b.origin.x };
-                let inset = b.size.height * 0.15;
-                return Some(div().absolute().left(edge - settings::z(1.5)).top(b.origin.y + inset)
-                    .w(settings::z(3.)).h(b.size.height - inset * 2.).rounded_full().bg(c("accent")).into_any_element());
-            }
-            Some(div().absolute().left(b.origin.x).top(b.origin.y).w(b.size.width).h(b.size.height)
-                .bg(c("accent").opacity(0.18)).border_2().border_color(c("accent")).into_any_element())
+            let target = d.mod_target.as_ref()?;
+            let drop = self.mod_drop(d, target, d.at)?;
+            let line = target.vertical || (d.whole_tab && target.kind == "tab");
+            Some(if line { drop_line(target.bounds, drop.after, target.vertical) } else { drop_box(target.bounds) })
         });
         let preview = mod_preview.or_else(|| self.pane_drag.as_ref().and_then(|d| d.target.as_ref()).and_then(|(id, edge)| {
             let mut b = *self.bounds.borrow().get(id)?;
@@ -227,8 +292,7 @@ impl AppWindow {
                 Some(Edge::Bottom) => { b.size.height /= 2.; b.origin.y += b.size.height; }
                 None => {}
             }
-            Some(div().absolute().left(b.origin.x).top(b.origin.y).w(b.size.width).h(b.size.height)
-                .bg(c("accent").opacity(0.18)).border_2().border_color(c("accent")).into_any_element())
+            Some(drop_box(b))
         }));
         let this = cx.entity().downgrade();
         div().id("pane-drag-layer").absolute().inset_0()
@@ -267,7 +331,7 @@ fn event_bounds(event: &Value) -> Option<Bounds<Pixels>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{STRIP, drop_zone, inherited_movable, tab_drop_index, top_strip};
+    use super::{STRIP, drop_zone, drops_after, inherited_movable, sibling_edge, tab_drop_index, top_strip};
     use crate::layout::{Axis, Content, Edge, Node};
     use gpui::{Bounds, point, px, size};
     #[test]
@@ -289,6 +353,20 @@ mod tests {
             ("x", "b", false, Some(2)), ("x", "d", true, Some(5)),
         ] {
             assert_eq!(tab_drop_index(&tabs, source, target, after), expected, "{source} on {target} after={after}");
+        }
+    }
+    #[test]
+    fn vertical_lists_split_rows_by_height() {
+        let b = Bounds::new(point(px(0.), px(100.)), size(px(300.), px(26.)));
+        assert!(!drops_after(b, point(px(290.), px(112.)), true));
+        assert!(drops_after(b, point(px(10.), px(114.)), true));
+        assert!(drops_after(b, point(px(290.), px(112.)), false));
+    }
+    #[test]
+    fn pane_lines_follow_the_split_reading_order() {
+        for (parent, after, expected) in [(Some(Axis::Row), false, Edge::Left), (Some(Axis::Row), true, Edge::Right),
+            (Some(Axis::Column), false, Edge::Top), (Some(Axis::Column), true, Edge::Bottom), (None, true, Edge::Right)] {
+            assert_eq!(sibling_edge(parent, after), expected);
         }
     }
     #[test]

@@ -388,7 +388,7 @@ fn scan_dir(root: &Path, prefix: &str) -> Vec<Found> {
 /// What mods ask of the window.
 pub enum Request {
     BeginDrag { kind: String, id: String, event: Value },
-    DragTarget { kind: String, id: String, event: Value },
+    DragTarget { kind: String, id: String, event: Value, vertical: bool },
     Run { name: String, args: Value },
     OpenOverlay { id: String, spec: Value },
     CloseOverlay { id: String },
@@ -900,7 +900,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             Ok(HostValue::Null)
         })
         .function("dragTarget", |a| {
-            request(Request::DragTarget { kind: a.string(0)?.into(), id: a.string(1)?.into(), event: from_host(a.value(2)?) });
+            request(Request::DragTarget { kind: a.string(0)?.into(), id: a.string(1)?.into(), event: from_host(a.value(2)?), vertical: opt_str(a.get(3), "orientation").as_deref() == Some("vertical") });
             Ok(HostValue::Null)
         })
         .async_function("exec", |a| {
