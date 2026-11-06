@@ -263,6 +263,7 @@ Properties any node can have:
   a pane drop adds the pane beside the tab's focused pane. Moves stay on the
   same machine, including between remote spaces. `panes()` exposes `movable`.
   Mouse Back and Forward traverse actual keyboard visits across tabs and spaces from terminals or the sidebar. History survives app restarts in the saved view. Closed panes are skipped; visiting another pane clears Forward.
+  Tilting the mouse wheel right or left runs `pane.next` or `pane.prev`; holding the tilt repeats it. Shift+wheel still scrolls sideways.
 - `floating`: blocks over this node (below).
 - `window_drag: true`: dragging the node moves the window, a double-click
   maximizes it. A mod's own control inside opts out by stopping the press:
@@ -580,7 +581,9 @@ The main ones:
   toward is left, right, up or down and picks the shown neighbor the way `pane.go` does;
   edge is left, right, top or bottom). Moves preserve pane IDs and terminal processes,
   require the same machine, and select the destination. Empty source tabs and spaces close.
-  `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`.
+  `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`,
+  `pane.next`, `pane.prev` (the shown tab's panes clockwise around its middle;
+  a single row runs left to right, a single column top to bottom).
   `pane.go` prefers the most recently focused pane along the nearest edge in that
   direction; unvisited panes fall back to overlap, then top/left layout order.
   `pane.go` also reaches visible mods whose `mod.json` says `"focusable": true`, and

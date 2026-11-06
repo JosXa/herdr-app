@@ -32,6 +32,8 @@ const NAMED = [
   ["pane.close", {}, "Pane", "Close pane", "kill"],
   ["pane.zoom", {}, "Pane", "Zoom pane", "maximize fullscreen"],
   ...["left", "right", "up", "down"].map((d) => ["pane.go", { direction: d }, "Pane", `Focus pane ${d}`, "move go"]),
+  ["pane.next", {}, "Pane", "Focus next pane", "cycle"],
+  ["pane.prev", {}, "Pane", "Focus previous pane", "cycle"],
   ...["left", "right", "up", "down"].map((d) => ["pane.swap", { direction: d }, "Pane", `Swap pane ${d}`, "move"]),
   ["space.new", {}, "Space", "New space", "workspace"],
   ["space.rename", {}, "Space", "Rename space", "workspace"],
