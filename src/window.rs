@@ -331,6 +331,10 @@ struct Overlay {
     key: Option<String>,
     /// `resizable: true`: a window people resize by its edges and corners.
     resizable: bool,
+    /// `pane` (or `terminal`): a window inside that pane, shown only while
+    /// the pane is, and docked to the corner it was last left nearest.
+    pane: Option<String>,
+    dock: Option<movable::Dock>,
     /// The app's own screen (a `frame-` mod: What's new, the welcome): only
     /// its own close ends it, never a layout switch.
     frame: bool,
@@ -1406,6 +1410,10 @@ impl AppWindow {
 
     /// Creates what's visible, drops what isn't, publishes state, saves, focuses.
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let orphans: Vec<String> = self.overlays.iter().filter(|o| o.pane.as_ref().is_some_and(|p| self.model.tab_of(p).is_none())).map(|o| o.id.clone()).collect();
+        for id in orphans {
+            self.remove_overlay(&id, window, cx);
+        }
         self.growth.borrow_mut().retain(|id| self.model.tab(id).is_some());
         self.model.order_spaces();
         let (model, live) = (&self.model, &self.live);
@@ -3367,17 +3375,37 @@ impl AppWindow {
                     return self.fail(format!("no stack {s:?} with a child {ch:?}"));
                 }
             }
-            "mod.open" => {
+            "mod.open" | "mod.show" => {
+                let toggle = name == "mod.open";
                 let name = Self::arg(a, "name").unwrap_or_default();
                 let Some(f) = self.folders.get(name) else { return self.fail(format!("no mod folder {name:?}")) };
                 let mut spec = mod_overlay(&f.dir);
                 spec["mod"] = json!(name);
-                // One popup per mod: running mod.open again toggles it, like app.settings.
-                let id = format!("mod-{name}");
-                if self.overlays.iter().any(|o| o.id == id) {
-                    self.close_overlay(&id, window, cx);
-                } else {
-                    self.open_overlay(id, spec, window, cx);
+                let wants_pane = Self::arg(a, "pane").is_some() || Self::arg(a, "terminal").is_some();
+                let pane = Self::owned(a, "pane").or_else(|| Self::arg(a, "terminal").and_then(|t| self.model.pane_of(t))).filter(|p| self.model.tab_of(p).is_some());
+                if wants_pane && pane.is_none() {
+                    return self.fail("no such pane");
+                }
+                // One popup per mod (and pane): mod.open again toggles it, like
+                // app.settings; mod.show leaves an open one open.
+                let id = match &pane {
+                    Some(p) => {
+                        spec["kind"] = json!("window");
+                        spec["pane"] = json!(p);
+                        format!("mod-{name}@{p}")
+                    }
+                    None => format!("mod-{name}"),
+                };
+                // A pane holds one window of a mod, whichever opened it (the mod itself, too).
+                let open = self
+                    .overlays
+                    .iter()
+                    .find(|o| o.id == id || (pane.is_some() && o.pane == pane && self.copies.get(&o.slot).is_some_and(|c| c.inst.name == name)))
+                    .map(|o| o.id.clone());
+                match open {
+                    None => self.open_overlay(id, spec, window, cx),
+                    Some(open) if toggle => self.close_overlay(&open, window, cx),
+                    Some(open) => self.raise_window(&open, cx),
                 }
             }
             "overlay.close" => {
@@ -3614,12 +3642,20 @@ impl AppWindow {
             _ => OverlayKind::Dialog,
         };
         let key = spec.get("key").and_then(Value::as_str).filter(|k| !k.is_empty() && kind == OverlayKind::Window).map(str::to_owned);
-        // One window per name: opening it again replaces it, in its place.
-        let mut place = key.as_deref().and_then(movable::place_of);
+        let pane = (kind == OverlayKind::Window)
+            .then(|| {
+                spec.get("pane").and_then(Value::as_str).map(str::to_owned).or_else(|| spec.get("terminal").and_then(Value::as_str).and_then(|t| self.model.pane_of(t)))
+            })
+            .flatten()
+            .filter(|p| self.model.tab_of(p).is_some());
+        // One window per name (and pane): opening it again replaces it, in its place.
+        let mut place = key.as_deref().filter(|_| pane.is_none()).and_then(movable::place_of);
+        let mut dock = key.as_deref().filter(|_| pane.is_some()).and_then(movable::dock_of);
         if let Some(k) = &key
-            && let Some(old) = self.overlays.iter().find(|o| o.key.as_ref() == Some(k)).map(|o| (o.id.clone(), o.place))
+            && let Some(old) = self.overlays.iter().find(|o| o.key.as_ref() == Some(k) && o.pane == pane).map(|o| (o.id.clone(), o.place, o.dock))
         {
             place = old.1.or(place);
+            dock = old.2.or(dock);
             self.remove_overlay(&old.0, window, cx);
         }
         let layout = spec.get("layout").filter(|_| kind != OverlayKind::Toast).and_then(|l| match serde_json::from_value::<Node>(l.clone()) {
@@ -3638,6 +3674,10 @@ impl AppWindow {
             props = json!({});
         }
         props["overlay"] = json!(id);
+        if let Some(p) = &pane {
+            props["pane"] = json!(p);
+            props["terminal"] = json!(self.model.address_of(p));
+        }
         let num = |k: &str, d: f32| spec.get(k).and_then(Value::as_f64).map_or(d, |v| v as f32);
         let size = match kind {
             OverlayKind::Toast => size(340.0, num("height", 72.0)),
@@ -3656,7 +3696,7 @@ impl AppWindow {
         let resized = key.as_deref().filter(|_| resizable).and_then(movable::size_of);
         let size = resized.unwrap_or(size);
         let fit = fit && resized.is_none();
-        if kind == OverlayKind::Window && place.is_none() && spec.get("at").is_some_and(|v| v.get("x").is_some()) {
+        if kind == OverlayKind::Window && pane.is_none() && place.is_none() && spec.get("at").is_some_and(|v| v.get("x").is_some()) {
             place = Some(at);
         }
         let timeout = props.get("timeout").and_then(Value::as_f64).unwrap_or(match props.get("level").and_then(Value::as_str) {
@@ -3697,6 +3737,8 @@ impl AppWindow {
             place,
             key: key.clone(),
             resizable,
+            pane,
+            dock,
             frame: spec.get("mod").and_then(Value::as_str).is_some_and(|m| m.starts_with("frame-")),
         });
         if let Some(k) = &key {
@@ -4407,8 +4449,13 @@ impl AppWindow {
         for o in order {
             let id = o.id.clone();
             // Up to 1: a share of the window (terminals in overlays want room, not px).
+            let pane = self.pane_area(o);
+            if o.pane.is_some() && pane.is_none() {
+                continue;
+            }
+            let room = pane.map_or(viewport, |b| b.size);
             let span = |v: f32, full: Pixels| if v <= 1.0 { full * v } else { settings::z(v) };
-            let (w, h) = (span(o.size.width, viewport.width), span(o.size.height, viewport.height));
+            let (w, h) = (span(o.size.width, room.width), span(o.size.height, room.height));
             let sized = |v: f32| v > 0.0 || o.kind != OverlayKind::Window;
             let content = match &o.layout {
                 Some(l) => self.render_node(l, &HashSet::new(), None, cx),
@@ -4421,6 +4468,7 @@ impl AppWindow {
                 .when(o.layout.is_none() && o.kind.modal_keys(), |d| d.key_context("Overlay"))
                 .when(sized(o.size.width), |d| d.w(w))
                 .when(sized(o.size.height), |d| if o.fit { d.max_h(h) } else { d.h(h) })
+                .when_some(pane, |d, b| d.max_w(b.size.width).max_h(b.size.height))
                 .when(!o.bare, |d| d.bg(c("popover")).border_1().border_color(c("border")).rounded(settings::z(8.0)).shadow_lg())
                 .overflow_hidden()
                 .flex()
@@ -4429,7 +4477,7 @@ impl AppWindow {
                 .when(o.kind != OverlayKind::Window, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
                 .child(content);
             match o.kind {
-                OverlayKind::Window => out.push(self.render_window(o, body, viewport, cx)),
+                OverlayKind::Window => out.push(self.render_window(o, body, viewport, pane, cx)),
                 OverlayKind::Dialog => out.push(
                     div()
                         .absolute()

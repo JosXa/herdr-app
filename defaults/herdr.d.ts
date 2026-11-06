@@ -366,7 +366,12 @@ export interface OverlaySpec {
   /** A window people resize by its edges and corners (240×160 at the least). With `key` it also
    *  remembers its size and opens at it next time. */
   resizable?: boolean;
-  /** px, or up to 1: a share of the window. */
+  /** A window inside this pane: shown only while the pane is, kept inside it, docked to the
+   *  corner it's left nearest, closed with the pane. Its props() get `pane` and `terminal`. */
+  pane?: string;
+  /** Like `pane`: the pane showing this terminal. */
+  terminal?: string;
+  /** px, or up to 1: a share of the window (of the pane, for a pane window). */
   width?: number;
   height?: number;
   at?: "pointer" | { x: number; y: number };

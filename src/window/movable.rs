@@ -5,6 +5,8 @@
 //! `keep` it also reopens on the next start, in the layout that opened it.
 //! A layout switch closes them (they belong to their layout, like its mods).
 //! With `resizable` its edges and corners resize it, and a key remembers the size too.
+//! With `pane` it lives inside that pane: drawn only while the pane is shown,
+//! kept wholly inside it, and docked to the corner it was left nearest.
 
 use super::*;
 
@@ -37,6 +39,37 @@ pub struct WinResize {
     moved: bool,
 }
 
+/// A pane window's spot: its gap to the pane corner it sits nearest, so it
+/// stays in that corner however the pane is resized.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Dock {
+    gap: Point<Pixels>,
+    right: bool,
+    bottom: bool,
+}
+
+impl Dock {
+    fn of(window: Bounds<Pixels>, area: Bounds<Pixels>) -> Dock {
+        let (right, bottom) = (window.center().x > area.center().x, window.center().y > area.center().y);
+        let gap_x = if right { area.right() - window.right() } else { window.left() - area.left() };
+        let gap_y = if bottom { area.bottom() - window.bottom() } else { window.top() - area.top() };
+        Dock { gap: point(gap_x.max(px(0.0)), gap_y.max(px(0.0))), right, bottom }
+    }
+
+    fn at(self, area: Bounds<Pixels>, s: Size<Pixels>) -> Point<Pixels> {
+        point(
+            if self.right { area.right() - s.width - self.gap.x } else { area.left() + self.gap.x },
+            if self.bottom { area.bottom() - s.height - self.gap.y } else { area.top() + self.gap.y },
+        )
+    }
+}
+
+/// Where a window of that size lands wholly inside the area (its top left
+/// when it's bigger).
+fn inside(at: Point<Pixels>, s: Size<Pixels>, area: Bounds<Pixels>) -> (Pixels, Pixels) {
+    (at.x.min(area.right() - s.width).max(area.left()), at.y.min(area.bottom() - s.height).max(area.top()))
+}
+
 // ---- windows.json: spots by key, and the kept windows of each layout
 
 fn path() -> PathBuf {
@@ -62,6 +95,16 @@ pub fn place_of(key: &str) -> Option<Point<Pixels>> {
 
 fn remember(key: &str, at: Point<Pixels>) {
     edit(|v| v["places"][key] = json!([f32::from(at.x).round(), f32::from(at.y).round()]));
+}
+
+pub fn dock_of(key: &str) -> Option<Dock> {
+    let d = read().get("docks")?.get(key)?.clone();
+    let n = |k: &str| d.get(k).and_then(Value::as_f64).map(|v| px(v as f32));
+    Some(Dock { gap: point(n("x")?, n("y")?), right: d.get("right")?.as_bool()?, bottom: d.get("bottom")?.as_bool()? })
+}
+
+fn remember_dock(key: &str, d: Dock) {
+    edit(|v| v["docks"][key] = json!({"x": f32::from(d.gap.x).round(), "y": f32::from(d.gap.y).round(), "right": d.right, "bottom": d.bottom}));
 }
 
 /// A resizable window's size by key, px at zoom 1.
@@ -112,17 +155,23 @@ impl AppWindow {
 
     /// A window at its spot: where it was dropped, else centered once its size
     /// is known (it stays invisible until then), always partly on screen.
-    pub(super) fn render_window(&self, o: &Overlay, body: Stateful<Div>, viewport: Size<Pixels>, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_window(&self, o: &Overlay, body: Stateful<Div>, viewport: Size<Pixels>, pane: Option<Bounds<Pixels>>, cx: &mut Context<Self>) -> AnyElement {
         let measured = self.bounds.borrow().get(&o.slot).map(|b| b.size);
         let size = measured.unwrap_or_default();
-        let at = match (&self.win_drag, o.place) {
-            (Some(d), _) if d.id == o.id && d.moving => d.pointer - d.grab,
-            (_, Some(p)) => p,
-            _ => point((viewport.width - size.width) / 2.0, (viewport.height - size.height) / 2.0),
+        let area = pane.unwrap_or(Bounds { origin: Point::default(), size: viewport });
+        let at = match (&self.win_drag, o.place, o.dock.filter(|_| pane.is_some())) {
+            (Some(d), _, _) if d.id == o.id && d.moving => d.pointer - d.grab,
+            (_, _, Some(dock)) => dock.at(area, size),
+            (_, Some(p), _) if pane.is_none() => p,
+            _ => area.origin + point((area.size.width - size.width) / 2.0, (area.size.height - size.height) / 2.0),
         };
-        let keep = px(KEEP_SHOWN);
-        let x = at.x.min(viewport.width - keep).max(keep - size.width);
-        let y = at.y.min(viewport.height - keep).max(px(0.0));
+        let (x, y) = match pane {
+            Some(_) => inside(at, size, area),
+            None => {
+                let keep = px(KEEP_SHOWN);
+                (at.x.min(viewport.width - keep).max(keep - size.width), at.y.min(viewport.height - keep).max(px(0.0)))
+            }
+        };
         let measure = {
             let (bounds, slot, known) = (self.bounds.clone(), o.slot.clone(), measured.is_some());
             canvas(
@@ -212,16 +261,32 @@ impl AppWindow {
             }
             _ => (from, length),
         };
-        let (x, w) = span(r.sx, b.origin.x, b.size.width, d.x, min_w);
-        let (y, h) = span(r.sy, b.origin.y, b.size.height, d.y, min_h);
+        let (mut x, mut w) = span(r.sx, b.origin.x, b.size.width, d.x, min_w);
+        let (mut y, mut h) = span(r.sy, b.origin.y, b.size.height, d.y, min_h);
         let id = r.id.clone();
+        let area = self.overlays.iter().find(|o| o.id == id).and_then(|o| self.pane_area(o));
+        if let Some(a) = area {
+            let (right, bottom) = ((x + w).min(a.right()), (y + h).min(a.bottom()));
+            (x, y) = (x.max(a.left()), y.max(a.top()));
+            (w, h) = (right - x, bottom - y);
+        }
         let zoom = settings::zoom();
         if let Some(o) = self.overlays.iter_mut().find(|o| o.id == id) {
-            o.place = Some(point(x, y));
+            match area {
+                Some(a) => o.dock = Some(Dock::of(Bounds { origin: point(x, y), size: size(w, h) }, a)),
+                None => o.place = Some(point(x, y)),
+            }
             o.size = size(f32::from(w) / zoom, f32::from(h) / zoom);
             o.fit = false;
         }
         cx.notify();
+    }
+
+    /// The bounds of a pane window's pane while it's shown (None: a free
+    /// window, or its pane is hidden and so is the window).
+    pub(super) fn pane_area(&self, o: &Overlay) -> Option<Bounds<Pixels>> {
+        let pane = o.pane.as_ref()?;
+        self.shown_panes().contains(pane).then(|| self.bounds.borrow().get(pane).copied()).flatten()
     }
 
     /// Ends a resize: the window keeps its new bounds (remembered under its key);
@@ -233,15 +298,17 @@ impl AppWindow {
             && let Some(k) = &o.key
             && r.moved
         {
-            if let Some(p) = o.place {
-                remember(k, p);
+            match (o.pane.is_some(), o.place, o.dock) {
+                (true, _, Some(d)) => remember_dock(k, d),
+                (false, Some(p), _) => remember(k, p),
+                _ => {}
             }
             remember_size(k, o.size);
         }
         true
     }
 
-    fn raise_window(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(super) fn raise_window(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(i) = self.overlays.iter().position(|o| o.id == id) else { return };
         if i + 1 < self.overlays.len() {
             let o = self.overlays.remove(i);
@@ -288,11 +355,26 @@ impl AppWindow {
             return false;
         }
         let at = d.pointer - d.grab;
-        if let Some(o) = self.overlays.iter_mut().find(|o| o.id == d.id) {
-            o.place = Some(at);
-            if let Some(k) = &o.key {
-                remember(k, at);
+        let Some(i) = self.overlays.iter().position(|o| o.id == d.id) else { return true };
+        let area = self.pane_area(&self.overlays[i]);
+        let measured = self.bounds.borrow().get(&self.overlays[i].slot).map(|b| b.size).unwrap_or_default();
+        let o = &mut self.overlays[i];
+        match area {
+            Some(a) => {
+                let (x, y) = inside(at, measured, a);
+                let dock = Dock::of(Bounds { origin: point(x, y), size: measured }, a);
+                o.dock = Some(dock);
+                if let Some(k) = &o.key {
+                    remember_dock(k, dock);
+                }
             }
+            None if o.pane.is_none() => {
+                o.place = Some(at);
+                if let Some(k) = &o.key {
+                    remember(k, at);
+                }
+            }
+            None => {}
         }
         true
     }

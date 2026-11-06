@@ -86,7 +86,8 @@ pub const COMMANDS: &[Command] = &[
     cmd("layout.resize", &[req("id"), opt("px"), opt("weight")], "Size a layout node."),
     cmd("layout.select", &[req("stack"), req("child")], "Show one child of a stack."),
     cmd("layout.reset", &[opt("name")], "Reset a shipped layout and its clicks (the old file is kept aside)."),
-    cmd("mod.open", &[req("name")], "Toggle a mod as the overlay its mod.json describes; calling again closes it."),
+    cmd("mod.open", &[req("name"), opt("pane"), opt("terminal")], "Toggle a mod as the overlay its mod.json describes; calling again closes it. With a pane or terminal: a window inside that pane."),
+    cmd("mod.show", &[req("name"), opt("pane"), opt("terminal")], "Open a mod like mod.open, but leave it open (and raise it) when it already is."),
     cmd("overlay.close", &[opt("id")], "Close an overlay (default: the top dialog or popup)."),
     // The app.
     cmd("app.help", &[], "Toggle the keys dialog."),

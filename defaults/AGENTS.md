@@ -632,7 +632,7 @@ The main ones:
   (personal tree edits; on shipped layouts only click/look fields change),
   `layout.reset {name?}` (reset a shipped layout and its clicks),
   `layout.clone {name, as?}` (duplicate, then switch; default `<name>-copy`).
-- App: `mod.clone {name, as?}` (duplicate; default `<name>-copy`), `mod.open {name}` (again: closes it), `overlay.close {id?}`, `app.help` (again: closes it), `app.palette` (again: closes it), `app.settings {section?}`
+- App: `mod.clone {name, as?}` (duplicate; default `<name>-copy`), `mod.open {name, pane?, terminal?}` (again: closes it; with a pane or terminal: a window in that pane), `mod.show {name, pane?, terminal?}` (like mod.open, but an open one stays), `overlay.close {id?}`, `app.help` (again: closes it), `app.palette` (again: closes it), `app.settings {section?}`
   (sections: `look`, `machines`, `alerts`, `updates`, `privacy`; Machines lists, updates, renames and removes ssh machines; settings edit the same files you do).
   `app.check_updates` (only a successful check reports Up to date; a failed check clears the checked time and can be retried), `app.update_core` (a newer herdr-core of this generation, terminals kept;
   never one a package manager owns), `app.welcome`, `app.whats_new`, `app.feedback {message?, from?}` (from `"person"` or `"agent"`; opens a review window, where the person can paste up to 3 screenshots; never sends until the person clicks Send), `app.reset`,
@@ -1037,6 +1037,13 @@ All of it is in `herdr.d.ts`. In short:
   `resizable: true` lets people resize it by its edges and corners (240×160
   at the least); with a key it opens at the size it was left at. A mod
   follows its size with `on_size_change`.
+  `pane: "<pane>"` (or `terminal: "<address>"`) puts a window inside that
+  pane: it shows only while the pane is on screen (hidden, it keeps running),
+  stays wholly inside it, a `width`/`height` up to 1 is a share of the pane,
+  and a dropped window docks to the pane corner it's nearest (a key remembers
+  the dock for every pane). It closes with its pane, and its `props()` carry
+  `pane` and `terminal`. `mod.open {name, pane?|terminal?}` toggles one per
+  pane; `mod.show` opens it the same way but leaves an open one open.
   A window can hold a layout, terminals too: a terminal keeps its presses
   (selecting text), so give it a mod block to drag by, a title bar:
   `openOverlay({ kind: "window", key: "t7", width: 600, height: 400, layout: { type: "column", children: [{ type: "block", size: { px: 28 }, content: { mod: "my-titlebar" } }, { type: "block", content: { terminal: "t7" } }] } })`.
