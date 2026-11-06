@@ -4,6 +4,7 @@
 //! window remembers its spot, and opening that key again replaces it; with
 //! `keep` it also reopens on the next start, in the layout that opened it.
 //! A layout switch closes them (they belong to their layout, like its mods).
+//! With `resizable` its edges and corners resize it, and a key remembers the size too.
 
 use super::*;
 
@@ -11,6 +12,11 @@ use super::*;
 const DRAG_START: f32 = 4.0;
 /// How much of a window stays on screen however far it's dragged, px.
 const KEEP_SHOWN: f32 = 48.0;
+/// How far a resizable window's grips reach into and beyond its edge, px.
+const GRIP: f32 = 5.0;
+/// The smallest a resize leaves a window, px at zoom 1.
+const MIN_WIDTH: f32 = 240.0;
+const MIN_HEIGHT: f32 = 160.0;
 
 pub struct WinDrag {
     pub id: String,
@@ -19,6 +25,16 @@ pub struct WinDrag {
     down: Point<Pixels>,
     pointer: Point<Pixels>,
     moving: bool,
+}
+
+pub struct WinResize {
+    pub id: String,
+    /// Which edges follow the pointer: -1 the left or top, 1 the right or bottom.
+    sx: i8,
+    sy: i8,
+    down: Point<Pixels>,
+    start: Bounds<Pixels>,
+    moved: bool,
 }
 
 // ---- windows.json: spots by key, and the kept windows of each layout
@@ -46,6 +62,16 @@ pub fn place_of(key: &str) -> Option<Point<Pixels>> {
 
 fn remember(key: &str, at: Point<Pixels>) {
     edit(|v| v["places"][key] = json!([f32::from(at.x).round(), f32::from(at.y).round()]));
+}
+
+/// A resizable window's size by key, px at zoom 1.
+pub fn size_of(key: &str) -> Option<Size<f32>> {
+    let s = read().get("sizes")?.get(key)?.as_array()?.clone();
+    Some(size(s.first()?.as_f64()? as f32, s.get(1)?.as_f64()? as f32))
+}
+
+fn remember_size(key: &str, s: Size<f32>) {
+    edit(|v| v["sizes"][key] = json!([s.width.round(), s.height.round()]));
 }
 
 pub fn keep(layout: &str, key: &str, spec: &Value) {
@@ -124,7 +150,95 @@ impl AppWindow {
                     this.window_press(&press, ev.position, cx);
                 }),
             );
-        div().absolute().left(x).top(y).when(measured.is_none(), |d| d.opacity(0.0)).child(body).into_any_element()
+        let grips = if o.resizable { self.resize_grips(&o.id, cx) } else { Vec::new() };
+        div().absolute().left(x).top(y).when(measured.is_none(), |d| d.opacity(0.0)).child(body).children(grips).into_any_element()
+    }
+
+    fn resize_grips(&self, id: &str, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let g = px(GRIP);
+        let grip = |sx: i8, sy: i8, cursor: CursorStyle| {
+            let id = id.to_owned();
+            div()
+                .id(SharedString::from(format!("rz-{id}-{sx}-{sy}")))
+                .absolute()
+                .occlude()
+                .cursor(cursor)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.resize_press(&id, sx, sy, ev.position, cx);
+                    }),
+                )
+        };
+        let corner = |sx: i8, sy: i8, cursor| {
+            let d = grip(sx, sy, cursor).w(g * 3.).h(g * 3.);
+            let d = if sx < 0 { d.left(-g) } else { d.right(-g) };
+            if sy < 0 { d.top(-g) } else { d.bottom(-g) }
+        };
+        vec![
+            grip(-1, 0, CursorStyle::ResizeLeftRight).left(-g).top(g * 2.).bottom(g * 2.).w(g * 2.).into_any_element(),
+            grip(1, 0, CursorStyle::ResizeLeftRight).right(-g).top(g * 2.).bottom(g * 2.).w(g * 2.).into_any_element(),
+            grip(0, -1, CursorStyle::ResizeUpDown).top(-g).left(g * 2.).right(g * 2.).h(g * 2.).into_any_element(),
+            grip(0, 1, CursorStyle::ResizeUpDown).bottom(-g).left(g * 2.).right(g * 2.).h(g * 2.).into_any_element(),
+            corner(-1, -1, CursorStyle::ResizeUpLeftDownRight).into_any_element(),
+            corner(1, 1, CursorStyle::ResizeUpLeftDownRight).into_any_element(),
+            corner(1, -1, CursorStyle::ResizeUpRightDownLeft).into_any_element(),
+            corner(-1, 1, CursorStyle::ResizeUpRightDownLeft).into_any_element(),
+        ]
+    }
+
+    fn resize_press(&mut self, id: &str, sx: i8, sy: i8, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(start) = self.bounds.borrow().get(&format!("overlay:{id}")).copied() else { return };
+        self.raise_window(id, cx);
+        self.win_resize = Some(WinResize { id: id.to_owned(), sx, sy, down: at, start, moved: false });
+        cx.notify();
+    }
+
+    fn resize_move(&mut self, at: Point<Pixels>, pressed: bool, cx: &mut Context<Self>) {
+        if !pressed {
+            self.resize_release(cx);
+            return;
+        }
+        let Some(r) = &mut self.win_resize else { return };
+        r.moved = true;
+        let (min_w, min_h) = (settings::z(MIN_WIDTH), settings::z(MIN_HEIGHT));
+        let (d, b) = (at - r.down, r.start);
+        let span = |s: i8, from: Pixels, length: Pixels, delta: Pixels, min: Pixels| match s {
+            1 => (from, (length + delta).max(min)),
+            -1 => {
+                let l = (length - delta).max(min);
+                (from + length - l, l)
+            }
+            _ => (from, length),
+        };
+        let (x, w) = span(r.sx, b.origin.x, b.size.width, d.x, min_w);
+        let (y, h) = span(r.sy, b.origin.y, b.size.height, d.y, min_h);
+        let id = r.id.clone();
+        let zoom = settings::zoom();
+        if let Some(o) = self.overlays.iter_mut().find(|o| o.id == id) {
+            o.place = Some(point(x, y));
+            o.size = size(f32::from(w) / zoom, f32::from(h) / zoom);
+            o.fit = false;
+        }
+        cx.notify();
+    }
+
+    /// Ends a resize: the window keeps its new bounds (remembered under its key);
+    /// returns true so the release doesn't also click what's under it.
+    fn resize_release(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(r) = self.win_resize.take() else { return false };
+        cx.notify();
+        if let Some(o) = self.overlays.iter().find(|o| o.id == r.id)
+            && let Some(k) = &o.key
+            && r.moved
+        {
+            if let Some(p) = o.place {
+                remember(k, p);
+            }
+            remember_size(k, o.size);
+        }
+        true
     }
 
     fn raise_window(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -185,7 +299,9 @@ impl AppWindow {
 
     /// While a window is pressed: follows the pointer anywhere in the app.
     pub(super) fn window_tracker(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.win_drag.as_ref()?;
+        if self.win_drag.is_none() && self.win_resize.is_none() {
+            return None;
+        }
         let this = cx.entity().downgrade();
         Some(
             canvas(
@@ -194,12 +310,16 @@ impl AppWindow {
                     let t = this.clone();
                     window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                         if phase == DispatchPhase::Capture {
-                            let _ = t.update(cx, |this, cx| this.window_move(ev.position, ev.pressed_button == Some(MouseButton::Left), cx));
+                            let pressed = ev.pressed_button == Some(MouseButton::Left);
+                            let _ = t.update(cx, |this, cx| {
+                                this.window_move(ev.position, pressed, cx);
+                                this.resize_move(ev.position, pressed, cx);
+                            });
                         }
                     });
                     let t = this.clone();
                     window.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {
-                        if phase == DispatchPhase::Capture && ev.button == MouseButton::Left && t.update(cx, |this, cx| this.window_release(cx)).unwrap_or(false) {
+                        if phase == DispatchPhase::Capture && ev.button == MouseButton::Left && t.update(cx, |this, cx| this.window_release(cx) | this.resize_release(cx)).unwrap_or(false) {
                             cx.stop_propagation();
                         }
                     });

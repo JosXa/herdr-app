@@ -328,6 +328,8 @@ struct Overlay {
     /// A window: where its top left is (None: centered) and its name (`key`).
     place: Option<Point<Pixels>>,
     key: Option<String>,
+    /// `resizable: true`: a window people resize by its edges and corners.
+    resizable: bool,
     /// The app's own screen (a `frame-` mod: What's new, the welcome): only
     /// its own close ends it, never a layout switch.
     frame: bool,
@@ -367,6 +369,8 @@ pub struct AppWindow {
     pane_grip_rows: RefCell<HashMap<String, f32>>,
     /// A window (`kind: "window"` overlay) being pressed or dragged.
     win_drag: Option<movable::WinDrag>,
+    /// A window being resized by an edge or corner.
+    win_resize: Option<movable::WinResize>,
     float_anims: HashMap<String, floats::FloatAnim>,
     float_reveal: HashMap<String, floats::Reveal>,
     float_hover: HashSet<String>,
@@ -486,6 +490,7 @@ impl AppWindow {
             pane_grip_hover: None,
             pane_grip_rows: RefCell::default(),
             win_drag: None,
+            win_resize: None,
             float_anims: HashMap::new(),
             float_reveal: HashMap::new(),
             float_hover: HashSet::new(),
@@ -3636,6 +3641,10 @@ impl AppWindow {
         };
         let top = (spec.get("at").and_then(Value::as_str) == Some("top")).then(|| num("offset", 0.0));
         let fit = layout.is_none() && (kind == OverlayKind::Popup || (matches!(kind, OverlayKind::Dialog | OverlayKind::Window) && spec.get("height").is_none()));
+        let resizable = kind == OverlayKind::Window && spec.get("resizable").and_then(Value::as_bool) == Some(true);
+        let resized = key.as_deref().filter(|_| resizable).and_then(movable::size_of);
+        let size = resized.unwrap_or(size);
+        let fit = fit && resized.is_none();
         if kind == OverlayKind::Window && place.is_none() && spec.get("at").is_some_and(|v| v.get("x").is_some()) {
             place = Some(at);
         }
@@ -3676,6 +3685,7 @@ impl AppWindow {
             bare: spec.get("frame").and_then(Value::as_str) == Some("none"),
             place,
             key: key.clone(),
+            resizable,
             frame: spec.get("mod").and_then(Value::as_str).is_some_and(|m| m.starts_with("frame-")),
         });
         if let Some(k) = &key {
@@ -3733,6 +3743,9 @@ impl AppWindow {
             let o = self.overlays.remove(i);
             if self.win_drag.as_ref().is_some_and(|d| d.id == o.id) {
                 self.win_drag = None;
+            }
+            if self.win_resize.as_ref().is_some_and(|r| r.id == o.id) {
+                self.win_resize = None;
             }
             self.bounds.borrow_mut().remove(&o.slot);
             self.remove_copy(&o.slot, window, cx);
