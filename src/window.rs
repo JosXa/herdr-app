@@ -5778,6 +5778,70 @@ export default class Probe extends View {
     }
 
     #[test]
+    fn vertical_drops_land_where_the_line_shows() {
+        in_own_process("vertical_drop_bridge");
+    }
+
+    #[gpui::test]
+    fn vertical_drop_bridge(cx: &mut gpui::TestAppContext) {
+        use gpui::{MouseButton, point, px};
+        use serde_json::json;
+        if !running_alone("vertical_drop_bridge") { return; }
+        let (view, cx) = open_window(cx, "vertical-drop-test", r#"
+            import { View, div } from 'gpui-kit';
+            import { beginDrag, dragTarget } from 'herdr';
+            const vertical = { orientation: 'vertical' };
+            export default class Drag extends View {
+                render() { return div().size_full().flex().flex_col()
+                    .child(div().h(40).child('tab').on_mouse_down('left', e => beginDrag('tab', 'tab', e)))
+                    .child(div().h(40).child('space').on_mouse_move(e => dragTarget('space', 'target', e, vertical)))
+                    .child(div().h(40).child('pane').on_mouse_down('left', e => beginDrag('pane', 'pane', e)))
+                    .child(div().h(40).child('other pane').on_mouse_move(e => dragTarget('pane', 'other-pane', e, vertical)));
+                }
+            }
+        "#, json!({"id":"main","type":"block","content":{"mod":"vertical-drop-test"}}));
+        let reset = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.model = Default::default();
+                this.model.add_space("source", "source", "", crate::model::Tab::new("tab", "work", "pane", "terminal"));
+                this.model.add_space("target", "target", "", crate::model::Tab::new("other", "other", "other-pane", "other-terminal"));
+                this.documents.entry(String::new()).or_default().available = true;
+                this.sync(window, cx);
+                this.focus.focus(window, cx);
+                cx.notify();
+            }));
+            cx.run_until_parked();
+        };
+        let origin = view.update(cx, |this, _| this.bounds.borrow()["main"].origin);
+        let at = |y| origin + point(px(20.), px(y));
+        let drag = |cx: &mut gpui::VisualTestContext, from: f32, to: f32| {
+            cx.simulate_mouse_down(at(from), MouseButton::Left, Default::default());
+            cx.run_until_parked();
+            cx.simulate_mouse_move(at(to), Some(MouseButton::Left), Default::default());
+            cx.run_until_parked();
+            cx.simulate_mouse_up(at(to), MouseButton::Left, Default::default());
+            cx.run_until_parked();
+        };
+        reset(cx);
+        drag(cx, 20., 70.);
+        view.update(cx, |this, _| assert_eq!(this.model.space("target").unwrap().tabs[0].id, "tab"));
+        reset(cx);
+        drag(cx, 100., 70.);
+        view.update(cx, |this, _| {
+            let target = this.model.space("target").unwrap();
+            assert_eq!(target.tabs.len(), 2);
+            assert!(target.tabs[0].root.find("pane").is_some());
+        });
+        reset(cx);
+        drag(cx, 100., 150.);
+        view.update(cx, |this, _| {
+            let tab = this.model.tab("other").unwrap();
+            assert!(tab.root.find("pane").is_some());
+            assert_eq!(tab.root.panes().iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["other-pane", "pane"]);
+        });
+    }
+
+    #[test]
     fn mouse_buttons_traverse_actual_pane_visits() {
         in_own_process("mouse_history");
     }
