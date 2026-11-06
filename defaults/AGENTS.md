@@ -263,7 +263,7 @@ Properties any node can have:
   a pane drop adds the pane beside the tab's focused pane. Moves stay on the
   same machine, including between remote spaces. `panes()` exposes `movable`.
   Mouse Back and Forward traverse actual keyboard visits across tabs and spaces from terminals or the sidebar. History survives app restarts in the saved view. Closed panes are skipped; visiting another pane clears Forward.
-  Tilting the mouse wheel right or left runs `pane.next` or `pane.prev`; holding the tilt repeats it. Shift+wheel still scrolls sideways.
+  Tilting the mouse wheel right or left runs `pane.next` or `pane.prev`; holding the tilt repeats it. Shift+wheel still scrolls sideways. Over a window overlay the tilt goes to that window's mod instead, as a `ScrollWheelEvent` with `delta_lines.x` and no `y`.
 - `floating`: blocks over this node (below).
 - `window_drag: true`: dragging the node moves the window, a double-click
   maximizes it. A mod's own control inside opts out by stopping the press:
@@ -1036,11 +1036,12 @@ All of it is in `herdr.d.ts`. In short:
   layout switch closes windows; kept ones come back with their layout.
   `resizable: true` lets people resize it by its edges and corners (240×160
   at the least); with a key it opens at the size it was left at. Without a
-  `height` it stays as tall as its content and resizes by its sides only. A
-  mod follows its size with `on_size_change`.
+  `height` it stays as tall as its content until a top or bottom drag fixes
+  its height for that opening (a key remembers only its width). A mod
+  follows its size with `on_size_change`.
   `pane: "<pane>"` (or `terminal: "<address>"`) puts a window inside that
   pane: it shows only while the pane is on screen (hidden, it keeps running),
-  stays wholly inside it, 10px clear of its edges, a `width`/`height` up to 1
+  stays wholly inside it below the pane header, 10px clear of its edges, a `width`/`height` up to 1
   is a share of that room (a content-tall window stops at it),
   and a dropped window docks to the pane corner it's nearest (a key remembers
   the dock for every pane). It closes with its pane, and its `props()` carry

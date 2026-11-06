@@ -5059,6 +5059,9 @@ impl Render for AppWindow {
             }))
             .capture_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, window, cx| {
                 let Some(forward) = wheel_tilt::tilt_forward(ev) else { return };
+                if this.window_under(ev.position) {
+                    return;
+                }
                 cx.stop_propagation();
                 if this.wheel_tilt.step(forward, std::time::Instant::now()) {
                     this.run(if forward { "pane.next" } else { "pane.prev" }, json!({}), window, cx);

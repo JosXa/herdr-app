@@ -5,9 +5,10 @@
 //! `keep` it also reopens on the next start, in the layout that opened it.
 //! A layout switch closes them (they belong to their layout, like its mods).
 //! With `resizable` its edges and corners resize it, and a key remembers the size too;
-//! one without a height keeps following its content's height and resizes by its sides.
+//! one without a height follows its content's height until a top or bottom drag sets one
+//! (a key remembers only its width).
 //! With `pane` it lives inside that pane: drawn only while the pane is shown,
-//! kept wholly inside it a margin from its edges, and docked to the corner it
+//! kept wholly inside it below its header a margin from its edges, and docked to the corner it
 //! was left nearest.
 
 use super::*;
@@ -203,11 +204,11 @@ impl AppWindow {
                     this.window_press(&press, ev.position, cx);
                 }),
             );
-        let grips = if o.resizable { self.resize_grips(&o.id, o.fit, cx) } else { Vec::new() };
+        let grips = if o.resizable { self.resize_grips(&o.id, cx) } else { Vec::new() };
         div().absolute().left(x).top(y).when(measured.is_none(), |d| d.opacity(0.0)).child(body).children(grips).into_any_element()
     }
 
-    fn resize_grips(&self, id: &str, sides_only: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn resize_grips(&self, id: &str, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let g = px(GRIP);
         let grip = |sx: i8, sy: i8, cursor: CursorStyle| {
             let id = id.to_owned();
@@ -229,22 +230,16 @@ impl AppWindow {
             let d = if sx < 0 { d.left(-g) } else { d.right(-g) };
             if sy < 0 { d.top(-g) } else { d.bottom(-g) }
         };
-        let sides = vec![
+        vec![
             grip(-1, 0, CursorStyle::ResizeLeftRight).left(-g).top(g * 2.).bottom(g * 2.).w(g * 2.).into_any_element(),
             grip(1, 0, CursorStyle::ResizeLeftRight).right(-g).top(g * 2.).bottom(g * 2.).w(g * 2.).into_any_element(),
-        ];
-        if sides_only {
-            return sides;
-        }
-        sides.into_iter().chain([
             grip(0, -1, CursorStyle::ResizeUpDown).top(-g).left(g * 2.).right(g * 2.).h(g * 2.).into_any_element(),
             grip(0, 1, CursorStyle::ResizeUpDown).bottom(-g).left(g * 2.).right(g * 2.).h(g * 2.).into_any_element(),
             corner(-1, -1, CursorStyle::ResizeUpLeftDownRight).into_any_element(),
             corner(1, 1, CursorStyle::ResizeUpLeftDownRight).into_any_element(),
             corner(1, -1, CursorStyle::ResizeUpRightDownLeft).into_any_element(),
             corner(-1, 1, CursorStyle::ResizeUpRightDownLeft).into_any_element(),
-        ])
-        .collect()
+        ]
     }
 
     fn resize_press(&mut self, id: &str, sx: i8, sy: i8, at: Point<Pixels>, cx: &mut Context<Self>) {
@@ -273,7 +268,7 @@ impl AppWindow {
         };
         let (mut x, mut w) = span(r.sx, b.origin.x, b.size.width, d.x, min_w);
         let (mut y, mut h) = span(r.sy, b.origin.y, b.size.height, d.y, min_h);
-        let id = r.id.clone();
+        let (id, vertical) = (r.id.clone(), r.sy != 0);
         let area = self.overlays.iter().find(|o| o.id == id).and_then(|o| self.pane_area(o));
         if let Some(a) = area {
             let (right, bottom) = ((x + w).min(a.right()), (y + h).min(a.bottom()));
@@ -286,18 +281,31 @@ impl AppWindow {
                 Some(a) => o.dock = Some(Dock::of(Bounds { origin: point(x, y), size: size(w, h) }, a)),
                 None => o.place = Some(point(x, y)),
             }
+            o.fit = o.fit && !vertical;
             o.size = size(f32::from(w) / zoom, if o.fit { o.size.height } else { f32::from(h) / zoom });
         }
         cx.notify();
     }
 
-    /// Where a pane window may be while its pane is shown: the pane less its
-    /// margin (None: a free window, or its pane is hidden and so is the window).
+    /// Where a pane window may be while its pane is shown: the pane below or
+    /// above its header, less its margin (None: a free window, or its pane is
+    /// hidden and so is the window).
     pub(super) fn pane_area(&self, o: &Overlay) -> Option<Bounds<Pixels>> {
         let pane = o.pane.as_ref()?;
         let b = self.shown_panes().contains(pane).then(|| self.bounds.borrow().get(pane).copied()).flatten()?;
+        let header = self.pane_frame().and_then(|f| f.header.as_ref()).filter(|h| !h.hover());
+        let row = header.map_or(px(0.), |h| settings::z(super::pane_size::header_height(h)).min(b.size.height / 2.));
+        let top = if header.is_some_and(|h| !h.bottom()) { row } else { px(0.) };
+        let b = Bounds { origin: point(b.origin.x, b.origin.y + top), size: size(b.size.width, b.size.height - row) };
         let m = settings::z(PANE_MARGIN).min(b.size.width / 4.).min(b.size.height / 4.);
         Some(Bounds { origin: point(b.origin.x + m, b.origin.y + m), size: size(b.size.width - m * 2., b.size.height - m * 2.) })
+    }
+
+    /// Whether a shown window overlay lies under this point, so a wheel tilt there is its own.
+    pub(super) fn window_under(&self, at: Point<Pixels>) -> bool {
+        let bounds = self.bounds.borrow();
+        self.overlays.iter().filter(|o| o.kind == OverlayKind::Window && (o.pane.is_none() || self.pane_area(o).is_some()))
+            .any(|o| bounds.get(&format!("overlay:{}", o.id)).is_some_and(|b| b.contains(&at)))
     }
 
     /// Ends a resize: the window keeps its new bounds (remembered under its key);
