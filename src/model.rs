@@ -388,6 +388,28 @@ impl Model {
         true
     }
 
+    pub fn move_to_new_space(&mut self, node: &str, folder: &str, index: Option<usize>) -> Option<String> {
+        let source = self.space_of(node)?;
+        let machine = source.machine.clone();
+        let at = index.unwrap_or_else(|| self.spaces.iter().position(|s| s.id == source.id).unwrap() + 2);
+        let tab = if let Some(tab) = source.tab(node).cloned() {
+            if source.tabs.len() == 1 { return None; }
+            self.remove_tab(node);
+            tab
+        } else {
+            let mut block = self.tab_of(node)?.root.find(node).filter(|n| n.is_pane()).cloned()?;
+            if source.tabs.len() == 1 && self.tab_of(node)?.root.panes().len() == 1 { return None; }
+            block.size = None;
+            self.remove_pane(node);
+            Tab::with_pane(&self.fresh_id_on("c", machine.as_deref()), "", block)
+        };
+        let space = self.fresh_id_on("sp", machine.as_deref());
+        self.add_space(&space, "", folder, tab);
+        self.space_mut(&space)?.machine = machine;
+        self.move_space(&space, at);
+        Some(space)
+    }
+
     /// Removes a pane. Returns what else closed: the tab, and the space if it was its last.
     pub fn remove_pane(&mut self, pane_id: &str) -> (bool, bool) {
         let Some(c) = self.tab_of_mut(pane_id) else { return (false, false) };
@@ -878,6 +900,27 @@ mod tests {
         assert!(m.move_pane_to("viewer", None, Some("c2"), None, None));
         assert_eq!(m.space("p2").unwrap().tabs.len(), 1);
         assert_eq!(m.tab("c2").unwrap().root.panes().len(), 3);
+    }
+
+    #[test]
+    fn panes_and_tabs_become_new_spaces_beside_their_source() {
+        let mut m = model_with_one();
+        assert!(m.move_to_new_space("x1", "/src/api", None).is_none());
+        assert!(m.move_to_new_space("c1", "/src/api", None).is_none());
+        assert!(m.split("x1", Axis::Row, "x2", "t2"));
+        m.add_space("p2", "web", "/web", Tab::new("c2", "web", "x3", "t3"));
+        let broken = m.move_to_new_space("x2", "/src/api/ui", None).unwrap();
+        assert_eq!(m.spaces.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["p1", broken.as_str(), "p2"]);
+        assert_eq!(m.active_space().unwrap().id, broken);
+        assert_eq!(m.focused_pane().as_deref(), Some("x2"));
+        assert_eq!(m.address_of("x2").as_deref(), Some("t2"));
+        assert_eq!(m.space(&broken).unwrap().folder, "/src/api/ui");
+        assert_eq!(m.tab("c1").unwrap().root.panes().len(), 1);
+        m.add_tab("p2", Tab::new("c3", "docs", "x4", "t4"));
+        let first = m.move_to_new_space("c3", "/web", Some(1)).unwrap();
+        assert_eq!(m.spaces[0].id, first);
+        assert_eq!(m.spaces[0].tabs[0].id, "c3");
+        assert_eq!(m.space("p2").unwrap().tabs.len(), 1);
     }
 
     #[test]

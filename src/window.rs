@@ -2808,8 +2808,8 @@ impl AppWindow {
             if !args.is_object() { args = json!({}); }
             args["machine"] = json!(machine);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.move" | "pane.split" | "pane.close" | "pane.swap" | "terminal.keep" | "terminal.park") {
-            let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k));
+        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "space.from" | "pane.move" | "pane.split" | "pane.close" | "pane.swap" | "terminal.keep" | "terminal.park") {
+            let node = ["id", "space", "pane", "tab"].into_iter().find_map(|k| Self::arg(&args, k));
             let target = node.and_then(|id| self.model.space(id).or_else(|| self.model.space_of(id))).or_else(|| self.model.active_space());
             let machine = if name == "space.new" { Self::arg(&args, "machine") }
                 else if name == "terminal.park" { Self::arg(&args, "terminal").and_then(|a| a.split_once('/').map(|(m, _)| m)) }
@@ -2953,8 +2953,26 @@ impl AppWindow {
                     Some("bottom") => Some(crate::layout::Edge::Bottom),
                     _ => return self.fail("edge must be left, right, top or bottom"),
                 };
-                if !self.model.move_pane_to(pane, Self::arg(a, "space"), Self::arg(a, "tab"), Self::arg(a, "target"), edge) { return self.fail("pane move needs valid targets on the same machine"); }
+                let target = match Self::arg(a, "toward") {
+                    None => Self::owned(a, "target"),
+                    Some(dir @ ("left" | "right" | "up" | "down")) => match self.neighbor(pane, dir, false) {
+                        Some(neighbor) => Some(neighbor),
+                        None => return self.fail(format!("no pane {dir} of {pane}")),
+                    },
+                    Some(other) => return self.fail(format!("toward is left, right, up or down, not {other:?}")),
+                };
+                if !self.model.move_pane_to(pane, Self::arg(a, "space"), Self::arg(a, "tab"), target.as_deref(), edge) { return self.fail("pane move needs valid targets on the same machine"); }
                 self.write_where(cx);
+            }
+            "space.from" => {
+                let Some(node) = Self::arg(a, "pane").or_else(|| Self::arg(a, "tab")) else { return self.fail("space.from needs pane or tab") };
+                let folder = self.model.address_of(node).and_then(|t| self.cwds.get(&t).cloned())
+                    .or_else(|| self.model.space_of(node).map(|s| s.folder.clone()))
+                    .unwrap_or_default();
+                let index = a.get("index").and_then(Value::as_u64).map(|i| i as usize);
+                let Some(space) = self.model.move_to_new_space(node, &folder, index) else { return self.fail("space.from needs a pane or tab whose space keeps another pane") };
+                self.write_where(cx);
+                self.answer(Ok(json!({ "space": space })));
             }
             "tab.settle" | "tab.unsettle" => {
                 let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab") };

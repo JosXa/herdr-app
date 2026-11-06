@@ -99,9 +99,19 @@ Move a tab to a position (1 = first), or append it to a space on the same machin
 | `index` | no |
 | `space` | no |
 
+## `space.from`
+
+Make a space from a pane (in a tab of its own) or a whole tab, keeping their processes, at a position (1 = first; default: after the source space). The source space must keep a pane.
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+| `tab` | no |
+| `index` | no |
+
 ## `pane.move`
 
-Move a pane to a new tab in a space, or beside a target pane or into a tab on the same machine. Edge: left, right, top, bottom; center swaps within a tab.
+Move a pane to a new tab in a space, or beside a target pane or into a tab on the same machine. Toward (left, right, up, down) targets the shown neighbor in that direction. Edge: left, right, top, bottom; center swaps within a tab.
 
 | Argument | Required |
 |---|---|
@@ -109,6 +119,7 @@ Move a pane to a new tab in a space, or beside a target pane or into a tab on th
 | `space` | no |
 | `tab` | no |
 | `target` | no |
+| `toward` | no |
 | `edge` | no |
 
 ## `pane.split`
@@ -161,7 +172,7 @@ Take a terminal's pane away and disable core keep; it keeps running (a sub-agent
 
 ## `terminal.right_click`
 
-Where right-clicks in a terminal (default: the focused one) go when its program takes the mouse: "program" or "menu" (Herdr's, the default). Shift+right-click is always the menu.
+Where right-clicks in a terminal (default: the focused one) go when its program takes the mouse: "program" or "menu" (Herdr's, the default). Shift+right-click opens the menu. The terminal_context_menu setting overrides both when false.
 
 | Argument | Required |
 |---|---|
@@ -242,6 +253,17 @@ No arguments.
 Show the previous tab.
 
 No arguments.
+
+## `tab.focus_grow`
+
+Toggle focus growth for this screen's tab, set enabled or suspended, or force a new calculation. Suspension takes priority.
+
+| Argument | Required |
+|---|---|
+| `id` | no |
+| `enabled` | no |
+| `suspended` | no |
+| `force` | no |
 
 ## `pane.zoom`
 
