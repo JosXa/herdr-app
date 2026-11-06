@@ -284,13 +284,13 @@ Focus a pane (or the pane showing a terminal).
 
 ## `pane.next`
 
-Focus the next pane of the shown tab, after the last the first.
+Focus the next pane of the shown tab clockwise.
 
 No arguments.
 
 ## `pane.prev`
 
-Focus the previous pane of the shown tab, before the first the last.
+Focus the previous pane of the shown tab clockwise.
 
 No arguments.
 

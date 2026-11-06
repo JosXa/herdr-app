@@ -3517,7 +3517,10 @@ impl AppWindow {
     }
 
     fn cycle_pane(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let panes = self.shown_panes();
+        let panes = {
+            let bounds = self.bounds.borrow();
+            clockwise(self.shown_panes().into_iter().filter_map(|id| Some((bounds.get(&id).copied()?, id))).collect())
+        };
         let Some(from) = self.model.focused_pane() else { return };
         let Some(index) = panes.iter().position(|pane| *pane == from) else { return };
         let to = panes[(index + if forward { 1 } else { panes.len() - 1 }) % panes.len()].clone();
@@ -4623,6 +4626,23 @@ fn nearest(cur: Bounds<Pixels>, dir: &str, candidates: impl IntoIterator<Item = 
         .map(|(_, _, _, id)| id)
 }
 
+fn clockwise(panes: Vec<(Bounds<Pixels>, String)>) -> Vec<String> {
+    let Some(area) = panes.iter().map(|(bounds, _)| *bounds).reduce(|a, b| a.union(&b)) else { return Vec::new() };
+    let middle = area.center();
+    let mut ring: Vec<(f32, f32, String)> = panes
+        .into_iter()
+        .map(|(bounds, id)| {
+            let offset = bounds.center() - middle;
+            let (dx, dy) = (f32::from(offset.x), f32::from(offset.y));
+            let distance = dx.hypot(dy);
+            let turn = if distance < 1.0 { 0.0 } else { (dy.atan2(dx) + 7.0 * std::f32::consts::PI / 8.0).rem_euclid(std::f32::consts::TAU) };
+            (turn, if dx + dy > 0.0 { distance } else { -distance }, id)
+        })
+        .collect();
+    ring.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    ring.into_iter().map(|(_, _, id)| id).collect()
+}
+
 fn position_popup(at: Point<Pixels>, body: Stateful<Div>) -> Anchored {
     anchored()
         .position(point(at.x.max(px(8.0)), at.y.max(px(8.0))))
@@ -5094,6 +5114,21 @@ mod tests {
         assert_eq!(super::nearest(r(401.0, 250.0, 399.0, 351.0), "left", column(), &[]).as_deref(), Some("bottom"));
         // A visited pane wins even when an unvisited pane has more overlap.
         assert_eq!(super::nearest(r(401.0, 250.0, 399.0, 351.0), "left", column(), &["top".to_owned()]).as_deref(), Some("top"));
+    }
+
+    #[test]
+    fn pane_cycles_run_clockwise_and_lines_run_left_to_right_or_down() {
+        let cell = |column: f32, row: f32, id: &str| (gpui::Bounds::new(point(px(column * 100.0), px(row * 100.0)), size(px(100.0), px(100.0))), id.to_owned());
+        assert_eq!(super::clockwise(vec![cell(0., 0., "a"), cell(1., 0., "b"), cell(0., 1., "c"), cell(1., 1., "d")]), ["a", "b", "d", "c"]);
+        let tall_left = (gpui::Bounds::new(point(px(0.), px(0.)), size(px(100.), px(200.))), "left".to_owned());
+        assert_eq!(super::clockwise(vec![tall_left, cell(1., 0., "top"), cell(1., 1., "bottom")]), ["top", "bottom", "left"]);
+        let grid = ["nw", "n", "ne", "w", "mid", "e", "sw", "s", "se"];
+        let panes = grid.iter().enumerate().map(|(i, id)| cell((i % 3) as f32, (i / 3) as f32, id)).collect();
+        assert_eq!(super::clockwise(panes), ["mid", "nw", "n", "ne", "e", "se", "s", "sw", "w"]);
+        let row = (0..5).map(|i| cell(i as f32, 0., &i.to_string())).collect();
+        assert_eq!(super::clockwise(row), ["2", "3", "4", "0", "1"]);
+        let column = (0..4).map(|i| cell(0., i as f32, &i.to_string())).collect();
+        assert_eq!(super::clockwise(column), ["0", "1", "2", "3"]);
     }
 
     #[test]

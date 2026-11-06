@@ -583,7 +583,8 @@ The main ones:
   edge is left, right, top or bottom). Moves preserve pane IDs and terminal processes,
   require the same machine, and select the destination. Empty source tabs and spaces close.
   `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`,
-  `pane.next`, `pane.prev` (the shown tab's panes in layout order, wrapping around).
+  `pane.next`, `pane.prev` (the shown tab's panes clockwise around its middle;
+  a single row runs left to right, a single column top to bottom).
   `pane.go` prefers the most recently focused pane along the nearest edge in that
   direction; unvisited panes fall back to overlap, then top/left layout order.
   `pane.go` also reaches visible mods whose `mod.json` says `"focusable": true`, and
