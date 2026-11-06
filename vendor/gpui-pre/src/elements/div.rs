@@ -399,6 +399,19 @@ impl Interactivity {
             }));
     }
 
+    /// HERDR: bind the given callback to scroll wheel events during the capture phase.
+    pub fn capture_scroll_wheel(
+        &mut self,
+        listener: impl Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static,
+    ) {
+        self.scroll_wheel_listeners
+            .push(Box::new(move |event, phase, hitbox, window, cx| {
+                if phase == DispatchPhase::Capture && hitbox.is_hovered(window) {
+                    (listener)(event, window, cx);
+                }
+            }));
+    }
+
     /// Bind the given callback to pinch gesture events during the bubble phase.
     ///
     /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
@@ -1062,6 +1075,15 @@ pub trait InteractiveElement: Sized {
         listener: impl Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.interactivity().on_scroll_wheel(listener);
+        self
+    }
+
+    /// HERDR: the fluent API equivalent to [`Interactivity::capture_scroll_wheel`].
+    fn capture_scroll_wheel(
+        mut self,
+        listener: impl Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.interactivity().capture_scroll_wheel(listener);
         self
     }
 

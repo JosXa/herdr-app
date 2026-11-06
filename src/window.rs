@@ -10,6 +10,7 @@ mod movable;
 mod pane_drag;
 mod pane_size;
 mod focus_history;
+mod wheel_tilt;
 mod titlebar;
 
 use crate::layout::{Axis, Background as Paint, Content, Fit, HeaderContent, Kind, Line, Node, PaneFrame, Size as Span};
@@ -444,6 +445,7 @@ pub struct AppWindow {
     tab_shown: bool,
     pane_history: Vec<String>,
     focus_history: focus_history::FocusHistory,
+    wheel_tilt: wheel_tilt::WheelTilt,
     restoring_history: Option<String>,
     window_active: bool,
     /// The system's appearance; a layout with a light and a dark theme follows it.
@@ -545,6 +547,7 @@ impl AppWindow {
             tab_shown: true,
             pane_history: Vec::new(),
             focus_history,
+            wheel_tilt: Default::default(),
             restoring_history,
             window_active: true,
             system_dark: is_dark(window.appearance()),
@@ -3086,6 +3089,7 @@ impl AppWindow {
                 self.agent = self.model.address_of(&p);
                 self.swapped.remove(&p);
             }
+            "pane.next" | "pane.prev" => return self.cycle_pane(name == "pane.next", window, cx),
             "pane.go" | "pane.swap" => {
                 let dir = Self::arg(a, "direction").unwrap_or_default();
                 if !matches!(dir, "left" | "right" | "up" | "down") {
@@ -3498,14 +3502,29 @@ impl AppWindow {
     fn neighbor(&self, from: &str, dir: &str, use_history: bool) -> Option<String> {
         let bounds = self.bounds.borrow();
         let cur = *bounds.get(from)?;
-        let mut candidates: Vec<String> = self.model.active_tab().into_iter()
-            .flat_map(|c| c.shown().visible_blocks().into_iter().filter(|n| n.is_pane()).map(|n| n.id.clone()))
-            .collect();
+        let mut candidates = self.shown_panes();
         if use_history {
             candidates.extend(self.chrome.visible_blocks().into_iter().filter(|n| self.focusable(&n.id)).map(|n| n.id.clone()));
         }
         let candidates = candidates.into_iter().filter(|id| id != from).filter_map(|id| Some((id.clone(), *bounds.get(&id)?)));
         nearest(cur, dir, candidates, if use_history { &self.pane_history } else { &[] })
+    }
+
+    fn shown_panes(&self) -> Vec<String> {
+        self.model.active_tab().into_iter()
+            .flat_map(|c| c.shown().visible_blocks().into_iter().filter(|n| n.is_pane()).map(|n| n.id.clone()))
+            .collect()
+    }
+
+    fn cycle_pane(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let panes = self.shown_panes();
+        let Some(from) = self.model.focused_pane() else { return };
+        let Some(index) = panes.iter().position(|pane| *pane == from) else { return };
+        let to = panes[(index + if forward { 1 } else { panes.len() - 1 }) % panes.len()].clone();
+        self.focused_block = None;
+        self.model.focus_pane(&to);
+        self.focused_pane = None;
+        self.sync(window, cx);
     }
 
     /// `pane.go`: the nearest pane or focusable mod.
@@ -4694,7 +4713,7 @@ fn terminal_block<'a>(chrome: &'a Node, focused: Option<&str>) -> Option<&'a Nod
 fn needs_model_pane(name: &str, args: &Value) -> bool {
     match name {
         "pane.split" | "pane.close" | "pane.zoom" | "terminal.show" => AppWindow::arg(args, "pane").is_none(),
-        "pane.go" | "pane.swap" => true,
+        "pane.go" | "pane.swap" | "pane.next" | "pane.prev" => true,
         "terminal.open" | "terminal.keep" => matches!(AppWindow::arg(args, "place"), Some("right" | "down")),
         _ => false,
     }
@@ -4970,6 +4989,13 @@ impl Render for AppWindow {
                 if let MouseButton::Navigate(direction) = ev.button {
                     this.navigate_history(direction, window, cx);
                     cx.stop_propagation();
+                }
+            }))
+            .capture_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, window, cx| {
+                let Some(forward) = wheel_tilt::tilt_forward(ev) else { return };
+                cx.stop_propagation();
+                if this.wheel_tilt.step(forward, std::time::Instant::now()) {
+                    this.run(if forward { "pane.next" } else { "pane.prev" }, json!({}), window, cx);
                 }
             }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
@@ -5727,6 +5753,48 @@ export default class Probe extends View {
     }
 
     #[test]
+    fn wheel_tilt_cycles_shown_panes() {
+        in_own_process("wheel_tilt");
+    }
+
+    #[gpui::test]
+    fn wheel_tilt(cx: &mut gpui::TestAppContext) {
+        use gpui::*;
+        use serde_json::json;
+        if !running_alone("wheel_tilt") { return; }
+        let (view, cx) = open_window(cx, "test", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model = Default::default();
+            this.model.add_space("space", "space", "", crate::model::Tab::new("tab", "tab", "a", "t-a"));
+            this.model.split("a", crate::layout::Axis::Row, "b", "t-b");
+            this.model.split("b", crate::layout::Axis::Row, "c", "t-c");
+            this.documents.entry(String::new()).or_default().available = true;
+            window.activate_window();
+            this.sync(window, cx);
+        }));
+        cx.run_until_parked();
+        let tilt = |cx: &mut VisualTestContext, x: f32, shift: bool| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: point(px(20.), px(80.)),
+                delta: ScrollDelta::Lines(point(x, 0.)),
+                modifiers: Modifiers { shift, ..Default::default() },
+                ..Default::default()
+            });
+            cx.run_until_parked();
+            view.update(cx, |this, _| this.model.focused_pane())
+        };
+        assert_eq!(view.update(cx, |this, _| this.model.focused_pane()).as_deref(), Some("c"));
+        assert_eq!(tilt(cx, -1., false).as_deref(), Some("a"));
+        assert_eq!(tilt(cx, -1., false).as_deref(), Some("a"));
+        assert_eq!(tilt(cx, 1., false).as_deref(), Some("c"));
+        assert_eq!(tilt(cx, 1., true).as_deref(), Some("c"));
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.prev", json!({}), window, cx)));
+        assert_eq!(view.update(cx, |this, _| this.model.focused_pane()).as_deref(), Some("b"));
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.next", json!({}), window, cx)));
+        assert_eq!(view.update(cx, |this, _| this.model.focused_pane()).as_deref(), Some("c"));
+    }
+
+    #[test]
     fn mouse_history_survives_saved_view_recreation() {
         in_own_process("mouse_history_restore");
     }
@@ -6089,7 +6157,7 @@ export default class Probe extends View {
     #[test]
     fn composition_commands_never_default_to_a_source_pane() {
         use serde_json::json;
-        for name in ["pane.split", "pane.close", "pane.zoom", "pane.go", "pane.swap", "terminal.show"] {
+        for name in ["pane.split", "pane.close", "pane.zoom", "pane.go", "pane.swap", "pane.next", "pane.prev", "terminal.show"] {
             assert!(super::needs_model_pane(name, &json!({})), "{name}");
             assert!(super::needs_model_pane(name, &json!({"pane": null})), "{name}");
         }

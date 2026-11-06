@@ -56,7 +56,8 @@ export function playSound(sound: string): null;
  *   pane.move {pane, space? | tab? | target?, edge?},
  *   tab.next, tab.prev.
  * Panes: pane.split {direction: "right" | "down", pane?}, pane.close {pane?}, pane.zoom {pane?},
- *   pane.focus {pane | terminal}, pane.go {direction}, pane.swap {direction}. Pane menus get target { pane, terminal }.
+ *   pane.focus {pane | terminal}, pane.go {direction}, pane.swap {direction},
+ *   pane.next, pane.prev. Pane menus get target { pane, terminal }.
  * Terminals: terminal.open {argv?, folder?, place?: "tab" | "right" | "down"}, terminal.kill {terminal},
  *   terminal.keep {terminal, place?} (a running one without a pane, e.g. a sub-agent, gets one),
  *   terminal.park {terminal} (its pane goes, it keeps running; the menu's "Send back"),

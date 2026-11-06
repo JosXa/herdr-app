@@ -61,6 +61,8 @@ pub const COMMANDS: &[Command] = &[
     cmd("tab.focus_grow", &[opt("id"), opt("enabled"), opt("suspended"), opt("force")], "Toggle focus growth for this screen's tab, set enabled or suspended, or force a new calculation. Suspension takes priority."),
     cmd("pane.zoom", &[opt("pane")], "Show only this pane of its tab, or all again."),
     cmd("pane.focus", &[opt("pane"), opt("terminal")], "Focus a pane (or the pane showing a terminal)."),
+    cmd("pane.next", &[], "Focus the next pane of the shown tab, after the last the first."),
+    cmd("pane.prev", &[], "Focus the previous pane of the shown tab, before the first the last."),
     cmd("pane.go", &[req("direction")], "Focus the pane or focusable mod to the \"left\", \"right\", \"up\" or \"down\"."),
     cmd("pane.swap", &[req("direction")], "Swap the focused pane with its neighbor in a direction."),
     cmd("terminal.peek", &[req("terminal")], "Peek at a running terminal over the tab, with keep-as-tab and close controls."),
