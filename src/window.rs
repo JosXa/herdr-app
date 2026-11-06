@@ -2893,15 +2893,11 @@ impl AppWindow {
             }
             "space.close" => {
                 let Some(id) = Self::owned(a, "id").or_else(|| self.model.active.clone()) else { return self.fail("no space to close") };
-                let Some(p) = self.model.space(&id) else { return self.fail(format!("no space {id:?}")) };
-                if a.get("confirmed").and_then(Value::as_bool) != Some(true) {
-                    if !person {
-                        return self.fail("space.close ends its terminals: pass confirmed: true");
-                    }
-                    let panes: usize = p.tabs.iter().map(|c| c.root.panes().len()).sum();
-                    let detail = format!("{} \u{2014} {} tabs, {} terminals", self.model.space_name(p, &home()), p.tabs.len(), panes);
-                    self.confirm("Close space?", &detail, "space.close", json!({ "id": id, "confirmed": true }), window, cx);
-                    return;
+                if self.model.space(&id).is_none() {
+                    return self.fail(format!("no space {id:?}"));
+                }
+                if !person && a.get("confirmed").and_then(Value::as_bool) != Some(true) {
+                    return self.fail("space.close ends its terminals: pass confirmed: true");
                 }
                 let addrs = self.model.remove_space(&id);
                 self.kill(&addrs, cx);
@@ -2949,7 +2945,6 @@ impl AppWindow {
             "tab.close" => {
                 let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab to close") };
                 let Some(p) = self.model.space_of(&id) else { return self.fail(format!("no tab {id:?}")) };
-                // The last tab takes its space with it: ask like closing the space.
                 if p.tabs.len() == 1 {
                     let mut args = json!({ "id": p.id });
                     args["confirmed"] = a.get("confirmed").cloned().unwrap_or(Value::Null);
@@ -3571,12 +3566,6 @@ impl AppWindow {
     }
 
     // ---- overlays ----------------------------------------------------------
-
-    fn confirm(&mut self, title: &str, detail: &str, command: &str, args: Value, window: &mut Window, cx: &mut Context<Self>) {
-        let spec = json!({ "mod": "confirm", "kind": "dialog", "width": 380, "height": 150,
-            "props": { "title": title, "detail": detail, "command": { "name": command, "args": args } } });
-        self.open_overlay(mods::new_overlay_id(), spec, window, cx);
-    }
 
     #[allow(clippy::too_many_arguments)]
     fn open_menu(&mut self, tab: &str, target: Value, at: Option<Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
