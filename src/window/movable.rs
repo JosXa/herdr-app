@@ -4,9 +4,11 @@
 //! window remembers its spot, and opening that key again replaces it; with
 //! `keep` it also reopens on the next start, in the layout that opened it.
 //! A layout switch closes them (they belong to their layout, like its mods).
-//! With `resizable` its edges and corners resize it, and a key remembers the size too.
+//! With `resizable` its edges and corners resize it, and a key remembers the size too;
+//! one without a height keeps following its content's height and resizes by its sides.
 //! With `pane` it lives inside that pane: drawn only while the pane is shown,
-//! kept wholly inside it, and docked to the corner it was left nearest.
+//! kept wholly inside it a margin from its edges, and docked to the corner it
+//! was left nearest.
 
 use super::*;
 
@@ -19,6 +21,8 @@ const GRIP: f32 = 5.0;
 /// The smallest a resize leaves a window, px at zoom 1.
 const MIN_WIDTH: f32 = 240.0;
 const MIN_HEIGHT: f32 = 160.0;
+/// How far a pane window stays from its pane's edges, px at zoom 1.
+const PANE_MARGIN: f32 = 10.0;
 
 pub struct WinDrag {
     pub id: String,
@@ -199,11 +203,11 @@ impl AppWindow {
                     this.window_press(&press, ev.position, cx);
                 }),
             );
-        let grips = if o.resizable { self.resize_grips(&o.id, cx) } else { Vec::new() };
+        let grips = if o.resizable { self.resize_grips(&o.id, o.fit, cx) } else { Vec::new() };
         div().absolute().left(x).top(y).when(measured.is_none(), |d| d.opacity(0.0)).child(body).children(grips).into_any_element()
     }
 
-    fn resize_grips(&self, id: &str, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn resize_grips(&self, id: &str, sides_only: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let g = px(GRIP);
         let grip = |sx: i8, sy: i8, cursor: CursorStyle| {
             let id = id.to_owned();
@@ -225,16 +229,22 @@ impl AppWindow {
             let d = if sx < 0 { d.left(-g) } else { d.right(-g) };
             if sy < 0 { d.top(-g) } else { d.bottom(-g) }
         };
-        vec![
+        let sides = vec![
             grip(-1, 0, CursorStyle::ResizeLeftRight).left(-g).top(g * 2.).bottom(g * 2.).w(g * 2.).into_any_element(),
             grip(1, 0, CursorStyle::ResizeLeftRight).right(-g).top(g * 2.).bottom(g * 2.).w(g * 2.).into_any_element(),
+        ];
+        if sides_only {
+            return sides;
+        }
+        sides.into_iter().chain([
             grip(0, -1, CursorStyle::ResizeUpDown).top(-g).left(g * 2.).right(g * 2.).h(g * 2.).into_any_element(),
             grip(0, 1, CursorStyle::ResizeUpDown).bottom(-g).left(g * 2.).right(g * 2.).h(g * 2.).into_any_element(),
             corner(-1, -1, CursorStyle::ResizeUpLeftDownRight).into_any_element(),
             corner(1, 1, CursorStyle::ResizeUpLeftDownRight).into_any_element(),
             corner(1, -1, CursorStyle::ResizeUpRightDownLeft).into_any_element(),
             corner(-1, 1, CursorStyle::ResizeUpRightDownLeft).into_any_element(),
-        ]
+        ])
+        .collect()
     }
 
     fn resize_press(&mut self, id: &str, sx: i8, sy: i8, at: Point<Pixels>, cx: &mut Context<Self>) {
@@ -276,17 +286,18 @@ impl AppWindow {
                 Some(a) => o.dock = Some(Dock::of(Bounds { origin: point(x, y), size: size(w, h) }, a)),
                 None => o.place = Some(point(x, y)),
             }
-            o.size = size(f32::from(w) / zoom, f32::from(h) / zoom);
-            o.fit = false;
+            o.size = size(f32::from(w) / zoom, if o.fit { o.size.height } else { f32::from(h) / zoom });
         }
         cx.notify();
     }
 
-    /// The bounds of a pane window's pane while it's shown (None: a free
-    /// window, or its pane is hidden and so is the window).
+    /// Where a pane window may be while its pane is shown: the pane less its
+    /// margin (None: a free window, or its pane is hidden and so is the window).
     pub(super) fn pane_area(&self, o: &Overlay) -> Option<Bounds<Pixels>> {
         let pane = o.pane.as_ref()?;
-        self.shown_panes().contains(pane).then(|| self.bounds.borrow().get(pane).copied()).flatten()
+        let b = self.shown_panes().contains(pane).then(|| self.bounds.borrow().get(pane).copied()).flatten()?;
+        let m = settings::z(PANE_MARGIN).min(b.size.width / 4.).min(b.size.height / 4.);
+        Some(Bounds { origin: point(b.origin.x + m, b.origin.y + m), size: size(b.size.width - m * 2., b.size.height - m * 2.) })
     }
 
     /// Ends a resize: the window keeps its new bounds (remembered under its key);

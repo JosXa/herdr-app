@@ -1035,11 +1035,13 @@ All of it is in `herdr.d.ts`. In short:
   replaces it); `keep: true` with a key reopens it on the next start. A
   layout switch closes windows; kept ones come back with their layout.
   `resizable: true` lets people resize it by its edges and corners (240×160
-  at the least); with a key it opens at the size it was left at. A mod
-  follows its size with `on_size_change`.
+  at the least); with a key it opens at the size it was left at. Without a
+  `height` it stays as tall as its content and resizes by its sides only. A
+  mod follows its size with `on_size_change`.
   `pane: "<pane>"` (or `terminal: "<address>"`) puts a window inside that
   pane: it shows only while the pane is on screen (hidden, it keeps running),
-  stays wholly inside it, a `width`/`height` up to 1 is a share of the pane,
+  stays wholly inside it, 10px clear of its edges, a `width`/`height` up to 1
+  is a share of that room (a content-tall window stops at it),
   and a dropped window docks to the pane corner it's nearest (a key remembers
   the dock for every pane). It closes with its pane, and its `props()` carry
   `pane` and `terminal`. `mod.open {name, pane?|terminal?}` toggles one per

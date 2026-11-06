@@ -3694,8 +3694,11 @@ impl AppWindow {
         let fit = layout.is_none() && (kind == OverlayKind::Popup || (matches!(kind, OverlayKind::Dialog | OverlayKind::Window) && spec.get("height").is_none()));
         let resizable = kind == OverlayKind::Window && spec.get("resizable").and_then(Value::as_bool) == Some(true);
         let resized = key.as_deref().filter(|_| resizable).and_then(movable::size_of);
-        let size = resized.unwrap_or(size);
-        let fit = fit && resized.is_none();
+        let size = match resized {
+            Some(r) if fit => Size { width: r.width, height: size.height },
+            Some(r) => r,
+            None => size,
+        };
         if kind == OverlayKind::Window && pane.is_none() && place.is_none() && spec.get("at").is_some_and(|v| v.get("x").is_some()) {
             place = Some(at);
         }

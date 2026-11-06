@@ -363,10 +363,12 @@ export interface OverlaySpec {
   /** With `key`: the window also reopens on the next start (and when its layout shows again),
    *  until it's closed. Only the window comes back: a mod keeps its own state (`shared`). */
   keep?: boolean;
-  /** A window people resize by its edges and corners (240×160 at the least). With `key` it also
-   *  remembers its size and opens at it next time. */
+  /** A window people resize by its edges and corners (240×160 at the least); without a `height`
+   *  it stays as tall as its content and resizes by its sides. With `key` it also remembers its
+   *  size and opens at it next time. */
   resizable?: boolean;
-  /** A window inside this pane: shown only while the pane is, kept inside it, docked to the
+  /** A window inside this pane: shown only while the pane is, kept inside it 10px clear of its
+   *  edges, docked to the
    *  corner it's left nearest, closed with the pane. Its props() get `pane` and `terminal`. */
   pane?: string;
   /** Like `pane`: the pane showing this terminal. */
