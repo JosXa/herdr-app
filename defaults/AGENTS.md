@@ -1032,6 +1032,9 @@ All of it is in `herdr.d.ts`. In short:
   or centered. `key: "name"` remembers its spot (opening that key again
   replaces it); `keep: true` with a key reopens it on the next start. A
   layout switch closes windows; kept ones come back with their layout.
+  `resizable: true` lets people resize it by its edges and corners (240×160
+  at the least); with a key it opens at the size it was left at. A mod
+  follows its size with `on_size_change`.
   A window can hold a layout, terminals too: a terminal keeps its presses
   (selecting text), so give it a mod block to drag by, a title bar:
   `openOverlay({ kind: "window", key: "t7", width: 600, height: 400, layout: { type: "column", children: [{ type: "block", size: { px: 28 }, content: { mod: "my-titlebar" } }, { type: "block", content: { terminal: "t7" } }] } })`.

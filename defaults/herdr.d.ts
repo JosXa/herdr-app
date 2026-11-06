@@ -359,6 +359,9 @@ export interface OverlaySpec {
   /** With `key`: the window also reopens on the next start (and when its layout shows again),
    *  until it's closed. Only the window comes back: a mod keeps its own state (`shared`). */
   keep?: boolean;
+  /** A window people resize by its edges and corners (240×160 at the least). With `key` it also
+   *  remembers its size and opens at it next time. */
+  resizable?: boolean;
   /** px, or up to 1: a share of the window. */
   width?: number;
   height?: number;
