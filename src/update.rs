@@ -6,9 +6,9 @@
 //! quit, or before opening the next window after a crash. The first start
 //! after a swap runs `hc update` for the core.
 //!
-//! A build from source never updates: only `scripts/package` (the release
-//! builds) sets `HERDR_APP_RELEASE`. `scripts/install-macos` makes a
-//! Herdr.app too, so the install's shape alone can't tell.
+//! This personal fork never updates itself, even when `scripts/package` sets
+//! `HERDR_APP_RELEASE`: an upstream release would replace its patches. Only a
+//! test release server (`HERDR_RELEASES_URL`) turns the checker on.
 //!
 //! The core is checked on the same clock (`core/latest.json`): a newer core
 //! of the same generation is offered (also applied after an app update), unless
@@ -117,12 +117,11 @@ pub fn set_core(version: Option<String>, managed: Option<String>) {
 }
 
 fn checks_app() -> Option<PathBuf> {
-    root().filter(|_| option_env!("HERDR_APP_RELEASE").is_some() || std::env::var_os("HERDR_RELEASES_URL").is_some())
+    root().filter(|_| checks_core())
 }
 
-/// A release build checks the core; a source build only when pointed at a test release server.
 fn checks_core() -> bool {
-    option_env!("HERDR_APP_RELEASE").is_some() || std::env::var_os("HERDR_RELEASES_URL").is_some()
+    std::env::var_os("HERDR_RELEASES_URL").is_some()
 }
 
 /// For the settings screen: both programs, what's waiting, when we last looked.
