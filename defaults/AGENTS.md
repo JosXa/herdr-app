@@ -555,7 +555,10 @@ The main ones:
   terminals start in that machine's home unless folder, and its tabs and
   splits stay there; `spaces()` gives each space's `machine`, null here),
   `space.close {id?, confirmed?}`, `space.rename {id?, name}` ("": Herdr's name again),
-  `space.move {id, index}`, `space.select {index | id}`, `space.next`, `space.prev`.
+  `space.move {id, index}`, `space.select {index | id}`, `space.next`, `space.prev`,
+  `space.from {pane | tab, index?}` (a pane, in a tab of its own, or a whole tab becomes
+  a new space on its machine; index starts at 1 and defaults to right after the source space;
+  the source space must keep a pane).
   With no `argv`, the target core chooses that machine's default shell (PowerShell 7 when available on Windows).
 - Tabs: `tab.new {name?, space?, folder?, argv?, task?}` (argv: an
   agent to run, task: its first message). Agents run in your interactive
@@ -572,8 +575,9 @@ The main ones:
   skip settled tabs).
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
   terminal, or a mod pane), `pane.close {pane?}`,
-  `pane.move {pane, space? | tab? | target?, edge?}` (exactly one destination:
+  `pane.move {pane, space? | tab? | target? | toward?, edge?}` (exactly one destination:
   a new tab in a space, a split in a tab, or a pane to swap within its tab or split beside;
+  toward is left, right, up or down and picks the shown neighbor the way `pane.go` does;
   edge is left, right, top or bottom). Moves preserve pane IDs and terminal processes,
   require the same machine, and select the destination. Empty source tabs and spaces close.
   `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`.
