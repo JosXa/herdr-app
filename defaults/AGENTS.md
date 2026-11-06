@@ -568,7 +568,7 @@ The main ones:
   toast with its exit code and last output lines. Or `tab.new {name?, space?, mod,
   props?}` for a tab whose only pane is a mod (a file, a board; split a shell
   in beside it like any tab), `tab.close {id?, confirmed?}` (closing the last tab
-  closes its space and asks first unless confirmed),
+  closes its space; agents pass confirmed: true),
    `tab.rename {id?, name}` ("": its number again), `tab.move {id, index?, space?}`
    (index starts at 1, space defaults to its current space, omitted index appends),
   `tab.select {index | id}`, `tab.next`, `tab.prev`,
