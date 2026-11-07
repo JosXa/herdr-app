@@ -262,7 +262,7 @@ Properties any node can have:
   put a tab before or after that tab, by the hovered half, which an insertion bar marks;
   a pane drop adds the pane beside the tab's focused pane. Moves stay on the
   same machine, including between remote spaces. `panes()` exposes `movable`.
-  Mouse Back and Forward traverse actual keyboard visits across tabs and spaces from terminals or the sidebar. History survives app restarts in the saved view. Closed panes are skipped; visiting another pane clears Forward.
+  Mouse Back and Forward traverse actual keyboard visits across tabs and spaces from terminals or the sidebar. History survives app restarts in the saved view. Closed panes are skipped; visiting another pane clears Forward. `pane.back` takes the same Back step; `other_space: true` skips the panes of the shown space.
   Tilting the mouse wheel right or left runs `pane.next` or `pane.prev`; holding the tilt repeats it. Shift+wheel still scrolls sideways. Over a window overlay the tilt goes to that window's mod instead, as a `ScrollWheelEvent` with `delta_lines.x` and no `y`.
 - `floating`: blocks over this node (below).
 - `window_drag: true`: dragging the node moves the window, a double-click

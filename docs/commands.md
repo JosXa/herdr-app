@@ -294,6 +294,14 @@ Focus the previous pane of the shown tab clockwise.
 
 No arguments.
 
+## `pane.back`
+
+Return to the pane focused before, as mouse Back does (other_space: true skips the shown space's panes).
+
+| Argument | Required |
+|---|---|
+| `other_space` | no |
+
 ## `pane.go`
 
 Focus the pane or focusable mod to the "left", "right", "up" or "down".

@@ -63,6 +63,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("pane.focus", &[opt("pane"), opt("terminal")], "Focus a pane (or the pane showing a terminal)."),
     cmd("pane.next", &[], "Focus the next pane of the shown tab clockwise."),
     cmd("pane.prev", &[], "Focus the previous pane of the shown tab clockwise."),
+    cmd("pane.back", &[opt("other_space")], "Return to the pane focused before, as mouse Back does (other_space: true skips the shown space's panes)."),
     cmd("pane.go", &[req("direction")], "Focus the pane or focusable mod to the \"left\", \"right\", \"up\" or \"down\"."),
     cmd("pane.swap", &[req("direction")], "Swap the focused pane with its neighbor in a direction."),
     cmd("terminal.peek", &[req("terminal")], "Peek at a running terminal over the tab, with keep-as-tab and close controls."),

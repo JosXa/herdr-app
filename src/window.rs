@@ -3100,6 +3100,7 @@ impl AppWindow {
                 self.swapped.remove(&p);
             }
             "pane.next" | "pane.prev" => return self.cycle_pane(name == "pane.next", window, cx),
+            "pane.back" => return self.navigate_history(gpui::NavigationDirection::Back, a.get("other_space").and_then(Value::as_bool) == Some(true), window, cx),
             "pane.go" | "pane.swap" => {
                 let dir = Self::arg(a, "direction").unwrap_or_default();
                 if !matches!(dir, "left" | "right" | "up" | "down") {
@@ -5058,7 +5059,7 @@ impl Render for AppWindow {
                 this.restoring_history = None;
                 this.hold_growth_for_press(cx);
                 if let MouseButton::Navigate(direction) = ev.button {
-                    this.navigate_history(direction, window, cx);
+                    this.navigate_history(direction, false, window, cx);
                     cx.stop_propagation();
                 }
             }))
@@ -5907,6 +5908,48 @@ export default class Probe extends View {
     }
 
     #[test]
+    fn pane_back_can_leave_the_shown_space() {
+        in_own_process("pane_back_other_space");
+    }
+
+    #[gpui::test]
+    fn pane_back_other_space(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("pane_back_other_space") { return; }
+        let (view, cx) = open_window(cx, "test", "", json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model = Default::default();
+            for id in ["a", "b"] {
+                this.model.add_space(id, id, "", crate::model::Tab::new(&format!("tab-{id}"), id, id, &format!("t-{id}")));
+            }
+            this.model.split("b", crate::layout::Axis::Row, "b2", "t-b2");
+            window.activate_window();
+            this.sync(window, cx);
+        }));
+        cx.run_until_parked();
+        for id in ["a", "b", "b2"] {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.focus", json!({"pane": id}), window, cx)));
+            cx.run_until_parked();
+        }
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.back", json!({"other_space": true}), window, cx)));
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("a"));
+            assert_eq!(this.focus_history.future, ["b2"]);
+            this.run("pane.back", json!({"other_space": true}), window, cx);
+        }));
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("b"));
+            this.run("pane.focus", json!({"pane": "b2"}), window, cx);
+        }));
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.back", json!({}), window, cx)));
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("b"))));
+    }
+
+    #[test]
     fn wheel_tilt_cycles_shown_panes() {
         in_own_process("wheel_tilt");
     }
@@ -5976,7 +6019,7 @@ export default class Probe extends View {
                 cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.focus", json!({"pane":id}), window, cx)));
                 cx.run_until_parked();
             }
-            cx.update(|window, cx| view.update(cx, |this, cx| this.navigate_history(gpui::NavigationDirection::Back, window, cx)));
+            cx.update(|window, cx| view.update(cx, |this, cx| this.navigate_history(gpui::NavigationDirection::Back, false, window, cx)));
             cx.run_until_parked();
             (model, history) = view.update(cx, |this, _| (crate::mirror::Document::capture(&this.model, None), this.focus_history.clone()));
             assert_eq!(history.future, ["c"]);
@@ -5991,7 +6034,7 @@ export default class Probe extends View {
         let (view, cx) = open_window(cx, "test", "", layout);
         cx.update(|window, cx| view.update(cx, |this, cx| {
             assert_eq!(this.focus_history, history);
-            this.navigate_history(gpui::NavigationDirection::Forward, window, cx);
+            this.navigate_history(gpui::NavigationDirection::Forward, false, window, cx);
             assert_eq!(this.focus_history, history);
             this.model.add_space("startup", "startup", "", crate::model::Tab::new("startup-tab", "startup", "startup-pane", "startup-terminal"));
             window.activate_window();
@@ -6006,14 +6049,14 @@ export default class Probe extends View {
         cx.run_until_parked();
         for (direction, expected) in [(gpui::NavigationDirection::Forward,"c"), (gpui::NavigationDirection::Back,"b"), (gpui::NavigationDirection::Back,"a")] {
             cx.update(|window, cx| view.update(cx, |this, cx| {
-                this.navigate_history(direction, window, cx);
+                this.navigate_history(direction, false, window, cx);
                 assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some(expected));
             }));
             cx.run_until_parked();
         }
         cx.update(|window, cx| view.update(cx, |this, cx| {
             this.model.spaces.retain(|space| space.id != "b");
-            this.navigate_history(gpui::NavigationDirection::Forward, window, cx);
+            this.navigate_history(gpui::NavigationDirection::Forward, false, window, cx);
             assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("c"));
             assert!(!this.focus_history.past.iter().chain(&this.focus_history.future).any(|pane| pane == "b"));
         }));
