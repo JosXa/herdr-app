@@ -304,7 +304,11 @@ impl AppWindow {
             (w, h) = (right - x, bottom - y);
         }
         let zoom = settings::zoom();
+        let mut unfitted = None;
         if let Some(o) = self.overlays.iter_mut().find(|o| o.id == id) {
+            if o.fit && vertical {
+                unfitted = Some(o.slot.clone());
+            }
             match area {
                 Some(a) => {
                     let before = Dock::of(b, a);
@@ -316,6 +320,9 @@ impl AppWindow {
             }
             o.fit = o.fit && !vertical;
             o.size = size(f32::from(w) / zoom, if o.fit { o.size.height } else { f32::from(h) / zoom });
+        }
+        if let Some(root) = unfitted.and_then(|slot| self.copies.get(&slot)).and_then(|c| c.root.clone()) {
+            root.update(cx, |r, cx| r.set_fit_content(false, cx));
         }
         cx.notify();
     }
