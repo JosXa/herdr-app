@@ -57,6 +57,11 @@ pub fn mods_dir() -> PathBuf {
     app_dir().join("mods")
 }
 
+/// The folder of modules every mod may import as `@lib/<file>.js`.
+pub const SHARED_MODULES_DIR: &str = "lib";
+pub const SHARED_MODULES_IMPORT: &str = "@lib";
+
+
 const AGENTS_MD: &str = include_str!("../defaults/AGENTS.md");
 
 /// Writes the agent guide and API types, and installs or updates the default
@@ -1143,13 +1148,17 @@ fn capabilities() -> Capabilities {
         .clipboard_write(true)
 }
 
+/// What a mod copy may touch and import: its capabilities, the `herdr` module and `@lib`.
+fn mod_policy(base: gpui_shell::policy::Policy, inst: Instance, copy: u64) -> gpui_shell::policy::Policy {
+    base.with_capabilities(capabilities())
+        .with_shared_modules(SHARED_MODULES_IMPORT, app_dir().join(SHARED_MODULES_DIR))
+        .with_host_module(module(inst, copy))
+        .expect("herdr module is valid")
+}
+
 /// What mods may touch, and the `herdr` module they import. Also used by `herdr-app check`.
 pub fn install_policy() -> async_channel::Receiver<Request> {
-    gpui_shell::policy::update_default(|p| {
-        p.with_capabilities(capabilities())
-            .with_host_module(module(Instance { name: String::new(), props: Value::Null }, 0))
-            .expect("herdr module is valid")
-    });
+    gpui_shell::policy::update_default(|p| mod_policy(p, Instance { name: String::new(), props: Value::Null }, 0));
     let (tx, rx) = async_channel::unbounded();
     let _ = REQUESTS.set(tx);
     rx
@@ -1175,13 +1184,8 @@ pub fn prepare_load(inst: &Instance) -> u64 {
         inst.props.to_string().hash(&mut h);
         format!("store-{:016x}.json", h.finish())
     };
-    let policy = gpui_shell::policy::Policy::new()
-        .with_application(inst.key())
-        .with_capabilities(capabilities())
-        .with_storage_path(dir.join(file))
-        .with_host_module(module(inst.clone(), copy))
-        .expect("herdr module is valid");
-    gpui_shell::policy::set_default(policy);
+    let base = gpui_shell::policy::Policy::new().with_application(inst.key()).with_storage_path(dir.join(file));
+    gpui_shell::policy::set_default(mod_policy(base, inst.clone(), copy));
     copy
 }
 

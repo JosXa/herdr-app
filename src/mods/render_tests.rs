@@ -560,6 +560,35 @@ fn animated_images_advance_with_explicit_and_implicit_ids(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+fn a_mod_imports_the_shared_folder_and_cannot_escape_it(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let lib = staged.0.join(SHARED_MODULES_DIR);
+    let demo = staged.0.join("mods").join("demo");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::create_dir_all(&demo).unwrap();
+    std::fs::write(lib.join("tone.js"), "export const tone = 'dark';").unwrap();
+    std::fs::write(lib.join("relative.js"), "export { tone } from './tone.js';").unwrap();
+    std::fs::write(lib.join("named.js"), "export { tone } from '@lib/tone.js';").unwrap();
+    std::fs::write(lib.join("escape.js"), "export { tone } from '../secret.js';").unwrap();
+    std::fs::write(staged.0.join("secret.js"), "export const tone = 'dark';").unwrap();
+    let load = |module: &str, cx: &mut TestAppContext| {
+        std::fs::write(demo.join("main.js"), format!(
+            "import {{ View, div }} from 'gpui-kit'; import {{ tone }} from '{SHARED_MODULES_IMPORT}/{module}'; if (tone !== 'dark') throw new Error(tone); export default class Demo extends View {{ render() {{ return div(); }} }}"
+        )).unwrap();
+        gpui_shell::policy::set_default(Policy::new().with_shared_modules(SHARED_MODULES_IMPORT, lib.clone()));
+        let context = cx.add_empty_window();
+        let loaded = context.update(|window, cx| ShellRuntime::new_isolated().unwrap().try_load(&demo, window, cx).map(|_| ()));
+        gpui_shell::policy::set_default(Policy::new());
+        loaded
+    };
+    load("relative.js", cx).expect("a shared module imports its neighbour by a relative path");
+    load("named.js", cx).expect("a shared module imports its neighbour by the shared name");
+    let escaped = load("escape.js", cx).expect_err("a shared module cannot import outside the shared folder");
+    assert!(format!("{escaped:#}").contains("resolves outside"), "{escaped:#}");
+}
+
+#[gpui::test]
 fn settings_keep_notes_in_the_whats_new_window(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();

@@ -2205,6 +2205,16 @@ impl ShellRuntime {
         } else {
             BTreeMap::new()
         };
+        // HERDR: shared module folders join the graph like dependencies, so a
+        // shared file is reloaded with the application that imports it.
+        let mut dependencies = dependencies;
+        for (name, folder) in scope::policy().shared_modules() {
+            let Ok(folder) = folder.canonicalize() else { continue };
+            dependencies.entry(name.clone()).or_insert(MaterializedDependency {
+                entry: folder.join("index.js"),
+                root: folder,
+            });
+        }
 
         // Every load is a new generation, which is what makes a reload pick up
         // a change in an imported module rather than only in the entry point.

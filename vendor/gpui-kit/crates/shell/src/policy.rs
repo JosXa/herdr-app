@@ -43,7 +43,7 @@
 //! explicitly, because "under whose authority is this code being loaded" is a
 //! question the caller has to answer rather than inherit.
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, rc::Rc};
 
 use crate::{
     capability::Capabilities,
@@ -99,6 +99,9 @@ pub struct Policy {
     /// process. Shared across copies of a policy for the same reason the other
     /// two are: one application, one storage.
     session: Rc<RefCell<Option<Storage>>>,
+    /// HERDR: folders every application may import by name (`name/file.js`),
+    /// resolved like a dependency: each folder is its own import boundary.
+    shared_modules: Rc<BTreeMap<String, PathBuf>>,
 }
 
 impl Default for Policy {
@@ -116,6 +119,7 @@ impl Policy {
             modules: Rc::new(RefCell::new(Rc::new(HostModules::default()))),
             store: Rc::new(RefCell::new(None)),
             session: Rc::new(RefCell::new(Some(Storage::in_memory()))),
+            shared_modules: Rc::default(),
         }
     }
 
@@ -143,6 +147,16 @@ impl Policy {
     pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
         self.capabilities = capabilities;
         self
+    }
+
+    /// HERDR: lets applications import the files in `root` as `name/<file>`.
+    pub fn with_shared_modules(mut self, name: impl Into<String>, root: PathBuf) -> Self {
+        Rc::make_mut(&mut self.shared_modules).insert(name.into(), root);
+        self
+    }
+
+    pub(crate) fn shared_modules(&self) -> &BTreeMap<String, PathBuf> {
+        &self.shared_modules
     }
 
     /// Names the `localStorage` file and reads it.
@@ -267,6 +281,7 @@ impl Policy {
             modules: self.modules.clone(),
             store: self.store.clone(),
             session: self.session.clone(),
+            shared_modules: self.shared_modules.clone(),
         }
     }
 }

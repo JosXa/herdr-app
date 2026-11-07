@@ -41,6 +41,7 @@ fn watched(rel: &Path) -> bool {
     let first = parts.next().and_then(|c| c.as_os_str().to_str()).unwrap_or_default();
     match first {
         "mods" => mod_file_counts(parts),
+        "lib" => shared_file_counts(parts),
         "layouts" | "themes" => true,
         "settings.json" | "keys.json" | "programs.json" => parts.next().is_none(),
         _ => false,
@@ -51,11 +52,21 @@ fn watched(rel: &Path) -> bool {
 /// typings and jsconfig into each mod on load, and editors drop hidden and
 /// backup files: none of those are the mod's code.
 fn mod_file_counts(rest: std::path::Components) -> bool {
+    let parts = hand_written(rest);
+    parts.is_some_and(|parts| !matches!(parts.as_slice(), [_, "jsconfig.json"] | [_, .., "gpui-kit.d.ts"]))
+}
+
+/// A change inside `lib/`, the modules every mod may import as `@lib/...`.
+fn shared_file_counts(rest: std::path::Components) -> bool {
+    let parts = hand_written(rest);
+    parts.is_some_and(|parts| parts.as_slice() != ["jsconfig.json"])
+}
+
+/// The path's parts, or `None` for what editors and package managers drop.
+fn hand_written(rest: std::path::Components<'_>) -> Option<Vec<&str>> {
     let parts: Vec<&str> = rest.filter_map(|c| c.as_os_str().to_str()).collect();
-    if parts.iter().any(|p| p.starts_with('.') || p.ends_with('~') || *p == "node_modules") {
-        return false;
-    }
-    !matches!(parts.as_slice(), [_, "jsconfig.json"] | [_, .., "gpui-kit.d.ts"])
+    let tooling = parts.iter().any(|p| p.starts_with('.') || p.ends_with('~') || *p == "node_modules");
+    (!tooling).then_some(parts)
 }
 
 /// Folders mods watch (`watchFolder`): one OS watcher each, shared by every
@@ -335,6 +346,11 @@ pub fn mod_of(rel: &Path) -> Option<String> {
     parts.next()?.as_os_str().to_str().map(str::to_owned)
 }
 
+/// Whether a changed path is a shared module (`lib/...`), which any mod may import.
+pub fn is_shared_module(rel: &Path) -> bool {
+    rel.components().next().is_some_and(|c| c.as_os_str() == crate::mods::SHARED_MODULES_DIR)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +381,19 @@ mod tests {
         assert!(!watched(Path::new("mods/probe/.git/HEAD")));
         assert!(watched(Path::new("mods/probe/mod.json")));
         assert_eq!(mod_of(Path::new("layouts/main.json")), None);
+    }
+
+    #[test]
+    fn a_saved_shared_module_counts_and_editor_files_beside_it_do_not() {
+        assert!(watched(Path::new("lib/opencode.js")));
+        assert!(watched(Path::new("lib/ui/menu.js")));
+        assert!(!watched(Path::new("lib/jsconfig.json")));
+        assert!(!watched(Path::new("lib/.opencode.js.swp")));
+        assert!(!watched(Path::new("lib/opencode.js~")));
+        assert!(!watched(Path::new("lib/node_modules/x/index.js")));
+        assert!(is_shared_module(Path::new("lib/opencode.js")));
+        assert!(!is_shared_module(Path::new("mods/probe/lib/x.js")));
+        assert_eq!(mod_of(Path::new("lib/opencode.js")), None);
     }
 
     #[test]

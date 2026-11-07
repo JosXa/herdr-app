@@ -843,7 +843,16 @@ selection and IME can lag the retained content until completion or timeout.
   main.js       the mod (required)
   mod.json    where it first appears: { "place": "right" | "left" | "top" | "bottom" | "none", "size": 320 }
   *.js, *.svg   more modules ("./ui.js"), its own icons
+~/.config/herdr-app/lib/
+  *.js          modules every mod may import ("@lib/menu.js")
 ```
+
+- A mod imports only its own files, the built-in modules and `lib/`. A `lib/`
+  module is loaded once per mod copy, so its top-level state isn't shared
+  between mods (use `shared(key)` for that), and it runs with the importing
+  mod's permissions. Saving a file in `lib/` reloads every mod. For the
+  editor, add `"paths": { "@lib/*": ["../../lib/*"] }` to the mod's
+  `jsconfig.json` `compilerOptions`.
 
 - `"focusable": true` in `mod.json` lets `pane.go` give a shown copy the keyboard.
   It gets `"focus"` from `nextCommand()`: focus your own handle then

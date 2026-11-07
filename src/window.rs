@@ -3991,7 +3991,7 @@ impl AppWindow {
         if self.file_events.is_none() || self.polls.is_multiple_of(25) {
             self.reload_config(window, cx);
             self.check_layout_file(window, cx);
-            self.sync_folders(window, cx);
+            self.sync_folders(&BTreeSet::new(), window, cx);
         }
         let now = Instant::now();
         let expired: Vec<String> = self.overlays.iter().filter(|o| o.expires.is_some_and(|e| e <= now)).map(|o| o.id.clone()).collect();
@@ -4036,14 +4036,20 @@ impl AppWindow {
         if changed.iter().any(|p| top(p) == "layouts") {
             self.check_layout_file(window, cx);
         }
-        let edited: BTreeSet<String> = changed.iter().filter_map(|p| crate::files::mod_of(p)).collect();
+        let mut edited: BTreeSet<String> = changed.iter().filter_map(|p| crate::files::mod_of(p)).collect();
+        // A shared module reloads every mod. Only the importers need it, but the
+        // module graph that knows them lives in the runtime; tracking importers
+        // per copy is the fix if restarting every view becomes a nuisance.
+        if changed.iter().any(|p| crate::files::is_shared_module(p)) {
+            edited.extend(self.copies.values().map(|c| c.inst.name.clone()));
+        }
         if edited.is_empty() {
             return;
         }
         // Copies that load now (a new folder, a fixed failed load) already run the
         // saved code: reloading them too would start them twice.
         let loaded: BTreeSet<u64> = self.copies.values().filter(|c| c.root.is_some()).map(|c| c.id).collect();
-        self.sync_folders(window, cx);
+        self.sync_folders(&edited, window, cx);
         let Some(runtime) = self.runtime.clone() else { return };
         for copy in self.copies.values_mut().filter(|c| edited.contains(&c.inst.name) && loaded.contains(&c.id)) {
             let Some(root) = &copy.root else { continue };
@@ -4055,12 +4061,14 @@ impl AppWindow {
         }
     }
 
-    fn sync_folders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// `edited` names mods changed outside their own folder, such as by a shared module.
+    fn sync_folders(&mut self, edited: &BTreeSet<String>, window: &mut Window, cx: &mut Context<Self>) {
         if self.runtime.is_none() {
             return;
         }
         let found: BTreeMap<String, Found> = mods::scan().into_iter().map(|f| (f.id.clone(), f)).collect();
-        let edited: BTreeSet<String> = found.values().filter(|f| self.folders.get(&f.id).is_some_and(|o| o.stamp != f.stamp)).map(|f| f.id.clone()).collect();
+        let mut edited = edited.clone();
+        edited.extend(found.values().filter(|f| self.folders.get(&f.id).is_some_and(|o| o.stamp != f.stamp)).map(|f| f.id.clone()));
         let added = found.keys().any(|k| !self.folders.contains_key(k));
         let removed = self.folders.keys().any(|k| !found.contains_key(k));
         let fresh: Vec<Found> = found.values().filter(|f| !self.seen.contains(&f.id)).cloned().collect();
@@ -5569,6 +5577,35 @@ mod tests {
         assert!(!pane_focused(cx), "hidden, the pane can't hold the keyboard");
         select("main", cx);
         assert!(pane_focused(cx));
+    }
+
+    #[test]
+    fn saving_a_shared_module_retries_a_mod_it_broke() {
+        in_own_process("shared_module_retry");
+    }
+
+    #[gpui::test]
+    fn shared_module_retry(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("shared_module_retry") {
+            return;
+        }
+        let lib = crate::mods::app_dir().join(crate::mods::SHARED_MODULES_DIR);
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("tone.js"), "export const shade = 'dark';").unwrap();
+        let (view, cx) = open_window(cx, "probe", r#"
+import { View, div } from 'gpui-kit';
+import { tone } from '@lib/tone.js';
+export default class Probe extends View { render() { return div().child(tone); } }
+"#, json!({ "id": "probe", "type": "block", "content": { "mod": "probe" } }));
+        cx.run_until_parked();
+        let state = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.copies.values().find(|c| c.inst.name == "probe").map(|c| (c.root.is_some(), c.error.clone())));
+        let (loaded, error) = state(cx).expect("the layout shows the probe");
+        assert!(!loaded && error.as_deref().is_some_and(|e| e.contains("export 'tone'")), "{error:?}");
+        std::fs::write(lib.join("tone.js"), "export const tone = 'fixed';").unwrap();
+        cx.update(|window, cx| view.update(cx, |this, cx| this.files_changed(vec!["lib/tone.js".into()], window, cx)));
+        cx.run_until_parked();
+        assert_eq!(state(cx), Some((true, None)));
     }
 
     #[test]
