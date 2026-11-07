@@ -3706,8 +3706,8 @@ impl AppWindow {
             place = Some(at);
         }
         let timeout = props.get("timeout").and_then(Value::as_f64).unwrap_or(match props.get("level").and_then(Value::as_str) {
-            Some("error" | "warning") => 8000.0,
-            _ => 5000.0,
+            Some("error" | "warning") => 15000.0,
+            _ => 8000.0,
         });
         let slot = format!("overlay:{id}");
         // The frame takes the keyboard first, so a mod that focuses itself while loading wins.
