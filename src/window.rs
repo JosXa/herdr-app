@@ -6000,6 +6000,86 @@ export default class Probe extends View {
     }
 
     #[test]
+    fn shift_right_drag_moves_only_the_pressed_corner_of_a_pane_window() {
+        in_own_process("pane_window_quarter_resize");
+    }
+
+    #[gpui::test]
+    fn pane_window_quarter_resize(cx: &mut gpui::TestAppContext) {
+        use gpui::*;
+        use serde_json::json;
+        if !running_alone("pane_window_quarter_resize") { return; }
+        // A viewer like the media viewer showing a wide screenshot: a top bar over
+        // a stage as tall as the image at the viewer's width, until someone sizes
+        // it. It reports the size it is drawn at, which is what the person sees.
+        let (view, cx) = open_window(cx, "viewer-probe", r#"
+            import { View, div } from 'gpui-kit';
+            import { setShared } from 'herdr';
+            export default class Viewer extends View {
+                width = 400;
+                render() {
+                    return div().id('root').size_full().flex().flex_col()
+                        .on_size_change((size, cx) => { setShared('viewer.drawn', size); this.width = size.width; cx.notify(); })
+                        .child(div().flex_none().h(30))
+                        .child(div().flex_grow(1).flex_shrink(1).flex_basis(this.width * 1200 / 5760).min_h(0));
+                }
+            }
+        "#, json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        std::fs::write(crate::mods::app_dir().join("mods/viewer-probe/mod.json"),
+            r#"{ "place": "none", "overlay": { "kind": "window", "key": "viewer-probe", "width": 400, "frame": "none", "resizable": true } }"#).unwrap();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model = Default::default();
+            this.model.add_space("space", "space", "", crate::model::Tab::new("tab", "tab", "a", "t-a"));
+            this.documents.entry(String::new()).or_default().available = true;
+            window.activate_window();
+            this.sync(window, cx);
+            this.run("mod.show", json!({ "name": "viewer-probe", "pane": "a" }), window, cx);
+        }));
+        cx.run_until_parked();
+        cx.run_until_parked();
+        // Where the viewer shows on screen: its window's top left, at the size it is drawn.
+        let drawn = |cx: &mut VisualTestContext| {
+            let origin = view.update(cx, |this, _| this.bounds.borrow()["overlay:mod-viewer-probe@a"].origin);
+            let size = crate::mods::shared("viewer.drawn").expect("the viewer reports the size it is drawn at");
+            Bounds::new(origin, gpui::size(px(size["width"].as_f64().unwrap() as f32), px(size["height"].as_f64().unwrap() as f32)))
+        };
+        // Shift + right drag, as Hyprland resizes a floating window.
+        let shift_right_drag = |cx: &mut VisualTestContext, from: Point<Pixels>, by: Point<Pixels>| {
+            cx.simulate_mouse_move(from, None, Modifiers::shift());
+            cx.simulate_mouse_down(from, MouseButton::Right, Modifiers::shift());
+            cx.run_until_parked();
+            for step in 1..=4 {
+                cx.simulate_mouse_move(from + by * (step as f32 / 4.), Some(MouseButton::Right), Modifiers::shift());
+                cx.run_until_parked();
+            }
+            cx.simulate_mouse_up(from + by, MouseButton::Right, Modifiers::shift());
+            cx.run_until_parked();
+            cx.run_until_parked();
+        };
+        // Freshly opened, pressed near the top right and dragged up and right:
+        // the top right corner follows the pointer, the bottom left corner stays.
+        let before = drawn(cx);
+        shift_right_drag(cx, point(before.right() - px(30.), before.top() + px(20.)), point(px(60.), px(-80.)));
+        let after = drawn(cx);
+        assert_eq!(after.bottom_left(), before.bottom_left(), "the bottom left corner stays where it was");
+        assert_eq!(after.top_right(), before.top_right() + point(px(60.), px(-80.)), "the top right corner follows the pointer");
+        // Pressed near the bottom right and dragged down and right: the bottom
+        // right corner follows the pointer, the top left corner stays.
+        let before = after;
+        shift_right_drag(cx, before.bottom_right() - point(px(30.), px(20.)), point(px(30.), px(40.)));
+        let after = drawn(cx);
+        assert_eq!(after.origin, before.origin, "the top left corner stays where it was");
+        assert_eq!(after.bottom_right(), before.bottom_right() + point(px(30.), px(40.)), "the bottom right corner follows the pointer");
+        // Pressed near the top left and dragged down: the top edge follows the
+        // pointer down, the bottom right corner stays.
+        let before = after;
+        shift_right_drag(cx, before.origin + point(px(30.), px(20.)), point(px(0.), px(30.)));
+        let after = drawn(cx);
+        assert_eq!(after.bottom_right(), before.bottom_right(), "the bottom right corner stays where it was");
+        assert_eq!(after.origin, before.origin + point(px(0.), px(30.)), "the top left corner follows the pointer");
+    }
+
+    #[test]
     fn mouse_history_survives_saved_view_recreation() {
         in_own_process("mouse_history_restore");
     }
