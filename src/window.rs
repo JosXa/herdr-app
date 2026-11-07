@@ -3732,7 +3732,7 @@ impl AppWindow {
             slot,
             at,
             size,
-            expires: (kind == OverlayKind::Toast).then(|| Instant::now() + Duration::from_millis(timeout as u64)),
+            expires: (kind == OverlayKind::Toast).then(|| Instant::now() + Duration::from_millis(timeout as u64) + TOAST_LINGER),
             focus,
             layout,
             top,
@@ -4729,6 +4729,7 @@ struct FolderCheck {
 /// Changes made outside Herdr (a commit in another app): looked for this often,
 /// in repos, while the window is in front.
 const FOLDER_FALLBACK: Duration = Duration::from_secs(60);
+const TOAST_LINGER: Duration = Duration::from_secs(2);
 
 /// An agent working, or a program other than the shell in front (an agent
 /// between turns isn't, even started from a shell).
