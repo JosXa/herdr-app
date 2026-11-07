@@ -337,6 +337,7 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
         ("border", border),
         ("input", input),
         ("muted", hex(mix(bg, fg, if light { 0.66 } else { 0.6 }))),
+        ("soft", hex(mix(bg, fg, 0.85))),
         ("dim", hex(mix(bg, fg, if light { 0.46 } else { 0.38 }))),
         ("accent", hex(p.ansi[4])),
         ("accent_foreground", hex(bg)),
@@ -879,6 +880,7 @@ mod tests {
         let t = resolve(&GRAPHITE, &overrides);
         assert_eq!(t["working"], hex(GRAPHITE.ansi[2]));
         assert_eq!(t["waiting"], resolve(&GRAPHITE, &BTreeMap::new())["working"]);
+        assert_eq!(t["soft"], hex(mix(GRAPHITE.background, 0xeeeeef, 0.85)));
         assert_eq!(t["done"], "#123456");
         assert!(color_value_ok("muted") && color_value_ok("#123456"));
         assert!(!color_value_ok("chartreuse"));

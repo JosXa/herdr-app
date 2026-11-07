@@ -30,7 +30,7 @@ const STATUSES = [
   ["done", "Unread", "An agent finished while you looked elsewhere."],
   ["idle", "Idle", "Nothing happens, and you have seen the result."],
 ];
-const STATUS_CHOICES = ["ansi1", "ansi2", "ansi3", "ansi4", "ansi5", "ansi6", "accent", "foreground", "muted", "dim"];
+const STATUS_CHOICES = ["ansi1", "ansi2", "ansi3", "ansi4", "ansi5", "ansi6", "accent", "foreground", "soft", "muted", "dim"];
 
 // What the app uses when settings.json names no font (settings.rs).
 const DEFAULT_FONT = "JetBrains Mono";
