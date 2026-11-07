@@ -3384,6 +3384,14 @@ impl AppWindow {
                 let Some(f) = self.folders.get(name) else { return self.fail(format!("no mod folder {name:?}")) };
                 let mut spec = mod_overlay(&f.dir);
                 spec["mod"] = json!(name);
+                if let Some(given) = a.get("props").and_then(Value::as_object) {
+                    if !spec["props"].is_object() {
+                        spec["props"] = json!({});
+                    }
+                    if let Some(props) = spec["props"].as_object_mut() {
+                        props.extend(given.clone());
+                    }
+                }
                 let wants_pane = Self::arg(a, "pane").is_some() || Self::arg(a, "terminal").is_some();
                 let pane = Self::owned(a, "pane").or_else(|| Self::arg(a, "terminal").and_then(|t| self.model.pane_of(t))).filter(|p| self.model.tab_of(p).is_some());
                 if wants_pane && pane.is_none() {
