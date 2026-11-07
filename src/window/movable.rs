@@ -4,7 +4,9 @@
 //! window remembers its spot, and opening that key again replaces it; with
 //! `keep` it also reopens on the next start, in the layout that opened it.
 //! A layout switch closes them (they belong to their layout, like its mods).
-//! With `resizable` its edges and corners resize it, and a key remembers the size too;
+//! With `resizable` its edges and corners resize it, and so does Shift + right drag anywhere on it
+//! (the corner of the quarter pressed follows the pointer, the opposite one stays: Hyprland's
+//! floating resize); a key remembers the size too;
 //! one without a height follows its content's height until a top or bottom drag sets one
 //! (a key remembers only its width).
 //! With `pane` it lives inside that pane: drawn only while the pane is shown,
@@ -39,6 +41,7 @@ pub struct WinResize {
     /// Which edges follow the pointer: -1 the left or top, 1 the right or bottom.
     sx: i8,
     sy: i8,
+    button: MouseButton,
     down: Point<Pixels>,
     start: Bounds<Pixels>,
     moved: bool,
@@ -55,7 +58,10 @@ pub struct Dock {
 
 impl Dock {
     fn of(window: Bounds<Pixels>, area: Bounds<Pixels>) -> Dock {
-        let (right, bottom) = (window.center().x > area.center().x, window.center().y > area.center().y);
+        Dock::anchored(window, area, window.center().x > area.center().x, window.center().y > area.center().y)
+    }
+
+    fn anchored(window: Bounds<Pixels>, area: Bounds<Pixels>, right: bool, bottom: bool) -> Dock {
         let gap_x = if right { area.right() - window.right() } else { window.left() - area.left() };
         let gap_y = if bottom { area.bottom() - window.bottom() } else { window.top() - area.top() };
         Dock { gap: point(gap_x.max(px(0.0)), gap_y.max(px(0.0))), right, bottom }
@@ -66,6 +72,15 @@ impl Dock {
             if self.right { area.right() - s.width - self.gap.x } else { area.left() + self.gap.x },
             if self.bottom { area.bottom() - s.height - self.gap.y } else { area.top() + self.gap.y },
         )
+    }
+}
+
+fn resize_cursor(sx: i8, sy: i8) -> CursorStyle {
+    match (sx, sy) {
+        (0, _) => CursorStyle::ResizeUpDown,
+        (_, 0) => CursorStyle::ResizeLeftRight,
+        _ if sx == sy => CursorStyle::ResizeUpLeftDownRight,
+        _ => CursorStyle::ResizeUpRightDownLeft,
     }
 }
 
@@ -191,12 +206,18 @@ impl AppWindow {
             .absolute()
             .size_full()
         };
-        let (raise, press) = (o.id.clone(), o.id.clone());
+        let (raise, press, resizable) = (o.id.clone(), o.id.clone(), o.resizable);
         let body = body
             .relative()
             .child(measure)
             // Pressed anywhere, even on the mod's own controls: to the front.
-            .capture_any_mouse_down(cx.listener(move |this, _, _, cx| this.raise_window(&raise, cx)))
+            .capture_any_mouse_down(cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                this.raise_window(&raise, cx);
+                if resizable && ev.button == MouseButton::Right && ev.modifiers.shift {
+                    cx.stop_propagation();
+                    this.resize_by_quarter(&raise, ev.position, cx);
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
@@ -210,43 +231,50 @@ impl AppWindow {
 
     fn resize_grips(&self, id: &str, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let g = px(GRIP);
-        let grip = |sx: i8, sy: i8, cursor: CursorStyle| {
+        let grip = |sx: i8, sy: i8| {
             let id = id.to_owned();
             div()
                 .id(SharedString::from(format!("rz-{id}-{sx}-{sy}")))
                 .absolute()
                 .occlude()
-                .cursor(cursor)
+                .cursor(resize_cursor(sx, sy))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        this.resize_press(&id, sx, sy, ev.position, cx);
+                        this.resize_press(&id, sx, sy, MouseButton::Left, ev.position, cx);
                     }),
                 )
         };
-        let corner = |sx: i8, sy: i8, cursor| {
-            let d = grip(sx, sy, cursor).w(g * 3.).h(g * 3.);
+        let corner = |sx: i8, sy: i8| {
+            let d = grip(sx, sy).w(g * 3.).h(g * 3.);
             let d = if sx < 0 { d.left(-g) } else { d.right(-g) };
             if sy < 0 { d.top(-g) } else { d.bottom(-g) }
         };
         vec![
-            grip(-1, 0, CursorStyle::ResizeLeftRight).left(-g).top(g * 2.).bottom(g * 2.).w(g * 2.).into_any_element(),
-            grip(1, 0, CursorStyle::ResizeLeftRight).right(-g).top(g * 2.).bottom(g * 2.).w(g * 2.).into_any_element(),
-            grip(0, -1, CursorStyle::ResizeUpDown).top(-g).left(g * 2.).right(g * 2.).h(g * 2.).into_any_element(),
-            grip(0, 1, CursorStyle::ResizeUpDown).bottom(-g).left(g * 2.).right(g * 2.).h(g * 2.).into_any_element(),
-            corner(-1, -1, CursorStyle::ResizeUpLeftDownRight).into_any_element(),
-            corner(1, 1, CursorStyle::ResizeUpLeftDownRight).into_any_element(),
-            corner(1, -1, CursorStyle::ResizeUpRightDownLeft).into_any_element(),
-            corner(-1, 1, CursorStyle::ResizeUpRightDownLeft).into_any_element(),
+            grip(-1, 0).left(-g).top(g * 2.).bottom(g * 2.).w(g * 2.).into_any_element(),
+            grip(1, 0).right(-g).top(g * 2.).bottom(g * 2.).w(g * 2.).into_any_element(),
+            grip(0, -1).top(-g).left(g * 2.).right(g * 2.).h(g * 2.).into_any_element(),
+            grip(0, 1).bottom(-g).left(g * 2.).right(g * 2.).h(g * 2.).into_any_element(),
+            corner(-1, -1).into_any_element(),
+            corner(1, 1).into_any_element(),
+            corner(1, -1).into_any_element(),
+            corner(-1, 1).into_any_element(),
         ]
     }
 
-    fn resize_press(&mut self, id: &str, sx: i8, sy: i8, at: Point<Pixels>, cx: &mut Context<Self>) {
+    fn resize_press(&mut self, id: &str, sx: i8, sy: i8, button: MouseButton, at: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(start) = self.bounds.borrow().get(&format!("overlay:{id}")).copied() else { return };
         self.raise_window(id, cx);
-        self.win_resize = Some(WinResize { id: id.to_owned(), sx, sy, down: at, start, moved: false });
+        self.win_resize = Some(WinResize { id: id.to_owned(), sx, sy, button, down: at, start, moved: false });
         cx.notify();
+    }
+
+    /// Shift + right press: resizes by the corner of the quarter pressed, as Hyprland does.
+    fn resize_by_quarter(&mut self, id: &str, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(b) = self.bounds.borrow().get(&format!("overlay:{id}")).copied() else { return };
+        let (sx, sy) = (if at.x < b.center().x { -1 } else { 1 }, if at.y < b.center().y { -1 } else { 1 });
+        self.resize_press(id, sx, sy, MouseButton::Right, at, cx);
     }
 
     fn resize_move(&mut self, at: Point<Pixels>, pressed: bool, cx: &mut Context<Self>) {
@@ -268,7 +296,7 @@ impl AppWindow {
         };
         let (mut x, mut w) = span(r.sx, b.origin.x, b.size.width, d.x, min_w);
         let (mut y, mut h) = span(r.sy, b.origin.y, b.size.height, d.y, min_h);
-        let (id, vertical) = (r.id.clone(), r.sy != 0);
+        let (id, vertical, sx, sy) = (r.id.clone(), r.sy != 0, r.sx, r.sy);
         let area = self.overlays.iter().find(|o| o.id == id).and_then(|o| self.pane_area(o));
         if let Some(a) = area {
             let (right, bottom) = ((x + w).min(a.right()), (y + h).min(a.bottom()));
@@ -278,7 +306,12 @@ impl AppWindow {
         let zoom = settings::zoom();
         if let Some(o) = self.overlays.iter_mut().find(|o| o.id == id) {
             match area {
-                Some(a) => o.dock = Some(Dock::of(Bounds { origin: point(x, y), size: size(w, h) }, a)),
+                Some(a) => {
+                    let before = Dock::of(b, a);
+                    let right = if sx == 0 { before.right } else { sx < 0 };
+                    let bottom = if sy == 0 { before.bottom } else { sy < 0 };
+                    o.dock = Some(Dock::anchored(Bounds { origin: point(x, y), size: size(w, h) }, a, right, bottom));
+                }
                 None => o.place = Some(point(x, y)),
             }
             o.fit = o.fit && !vertical;
@@ -404,30 +437,40 @@ impl AppWindow {
             return None;
         }
         let this = cx.entity().downgrade();
+        let layer = div().absolute().size_full();
+        let layer = match &self.win_resize {
+            Some(r) => layer.cursor(resize_cursor(r.sx, r.sy)),
+            None => layer,
+        };
         Some(
-            canvas(
+            layer.child(canvas(
                 |_, _, _| {},
                 move |_, _, window, _| {
                     let t = this.clone();
                     window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                         if phase == DispatchPhase::Capture {
-                            let pressed = ev.pressed_button == Some(MouseButton::Left);
                             let _ = t.update(cx, |this, cx| {
-                                this.window_move(ev.position, pressed, cx);
-                                this.resize_move(ev.position, pressed, cx);
+                                let resizing = this.win_resize.as_ref().map(|r| r.button);
+                                this.window_move(ev.position, ev.pressed_button == Some(MouseButton::Left), cx);
+                                this.resize_move(ev.position, resizing.is_some() && ev.pressed_button == resizing, cx);
                             });
                         }
                     });
                     let t = this.clone();
                     window.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {
-                        if phase == DispatchPhase::Capture && ev.button == MouseButton::Left && t.update(cx, |this, cx| this.window_release(cx) | this.resize_release(cx)).unwrap_or(false) {
+                        let release = |this: &mut AppWindow, cx: &mut Context<AppWindow>| {
+                            let drag = ev.button == MouseButton::Left && this.window_release(cx);
+                            let resize = this.win_resize.as_ref().is_some_and(|r| r.button == ev.button) && this.resize_release(cx);
+                            drag | resize
+                        };
+                        if phase == DispatchPhase::Capture && t.update(cx, release).unwrap_or(false) {
                             cx.stop_propagation();
                         }
                     });
                 },
             )
             .absolute()
-            .size_full()
+            .size_full())
             .into_any_element(),
         )
     }
