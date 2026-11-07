@@ -198,8 +198,8 @@ fn parse_theme_file(name: &str, text: &str) -> Result<(Palette, BTreeMap<String,
         ansi[i] = c(&format!("ansi[{i}]"), v)?;
     }
     for (k, v) in &f.colors {
-        if parse_hex(v).is_none() {
-            return Err(format!("themes/{name}.json: colors.{k}: {v:?} is not #rrggbb or #rrggbbaa"));
+        if !color_value_ok(v) {
+            return Err(format!("themes/{name}.json: colors.{k}: {v:?} is not #rrggbb, #rrggbbaa or a theme color name"));
         }
     }
     let cursor = f.cursor.as_deref().map(|v| c("cursor", v)).transpose()?;
@@ -348,6 +348,7 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
         ("working", hex(working)),
         ("blocked", hex(blocked)),
         ("done", hex(done)),
+        ("waiting", hex(working)),
         ("idle", hex(mix(bg, fg, 0.38))),
         ("unknown", hex(mix(bg, fg, 0.38))),
     ]
@@ -357,10 +358,17 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
     for (i, c) in p.ansi.iter().enumerate() {
         t.insert(format!("ansi{i}"), hex(*c));
     }
+    let base = t.clone();
     for (k, v) in overrides {
-        t.insert(k.clone(), v.clone());
+        t.insert(k.clone(), base.get(v).cloned().unwrap_or_else(|| v.clone()));
     }
     t
+}
+
+/// A color in settings or a theme file: `#rrggbb`, `#rrggbbaa`, or the name
+/// of a theme color (`ansi3`, `accent`), which follows the active theme.
+fn color_value_ok(v: &str) -> bool {
+    parse_hex(v).is_some() || resolve(&GRAPHITE, &BTreeMap::new()).contains_key(v)
 }
 
 /// settings.json: preferences used where a layout leaves its look unset.
@@ -623,8 +631,8 @@ impl Settings {
         }
         out.dedup();
         for (k, v) in &self.colors {
-            if parse_hex(v).is_none() {
-                out.push(format!("colors.{k}: {v:?} is not #rrggbb or #rrggbbaa"));
+            if !color_value_ok(v) {
+                out.push(format!("colors.{k}: {v:?} is not #rrggbb, #rrggbbaa or a theme color name"));
             }
         }
         if !(1.0..=21.0).contains(&self.minimum_contrast) {
@@ -864,6 +872,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn colors_can_name_a_theme_color() {
+        let overrides: BTreeMap<String, String> = [("working".into(), "ansi2".into()), ("done".into(), "#123456".into())].into();
+        let t = resolve(&GRAPHITE, &overrides);
+        assert_eq!(t["working"], hex(GRAPHITE.ansi[2]));
+        assert_eq!(t["waiting"], resolve(&GRAPHITE, &BTreeMap::new())["working"]);
+        assert_eq!(t["done"], "#123456");
+        assert!(color_value_ok("muted") && color_value_ok("#123456"));
+        assert!(!color_value_ok("chartreuse"));
+        let person = Person { colors: [("working".into(), "chartreuse".into())].into(), ..Person::default() };
+        assert_eq!(Settings::compose(&person, &crate::layout::Look::default(), true).problems().len(), 1);
+    }
 
     #[test]
     fn layout_look_wins_and_settings_fill_what_it_leaves_unset() {

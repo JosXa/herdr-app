@@ -693,7 +693,9 @@ What's about the user, never a look:
 - `theme`: a theme name or `{light, dark}`; used where the layout sets none.
   The theme picker overrides any layout and stays on that layout.
 - `colors`: theme color overrides (`{"accent":"#ff8800"}`), with the same
-  precedence as fonts.
+  precedence as fonts. A value may name another theme color instead of hex
+  (`{"working":"ansi3"}`), so the override follows the active theme.
+  Settings > Look > Status colors writes these for the status colors.
 - `appearance`: `"light"` or `"dark"` always; absent, the system's. A layout
   with a light and a dark theme shows the matching one.
 - Updates: an installed app downloads them by itself and offers Restart and

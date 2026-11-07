@@ -22,6 +22,16 @@ const APPEARANCES = [
   ["dark", "Dark"],
 ];
 
+// The session states the panels color, and the theme colors each may take.
+const STATUSES = [
+  ["working", "Working", "An agent is busy."],
+  ["blocked", "Needs you", "An agent waits for an answer or a permission."],
+  ["waiting", "Waiting", "An agent retries later, such as after a rate limit."],
+  ["done", "Unread", "An agent finished while you looked elsewhere."],
+  ["idle", "Idle", "Nothing happens, and you have seen the result."],
+];
+const STATUS_CHOICES = ["ansi1", "ansi2", "ansi3", "ansi4", "ansi5", "ansi6", "accent", "foreground", "muted", "dim"];
+
 // What the app uses when settings.json names no font (settings.rs).
 const DEFAULT_FONT = "JetBrains Mono";
 const DEFAULT_UI_FONT = "Geist";
@@ -380,6 +390,51 @@ export default class Settings extends View {
       );
   }
 
+  // Theme color names keep following the theme; "Theme" removes the override.
+  statusColorPicker(t, key) {
+    const chosen = this.person.colors?.[key] ?? null;
+    const choose = (name, cx) =>
+      this.change((p) => {
+        p.colors = { ...p.colors };
+        if (name === null) delete p.colors[key];
+        else p.colors[key] = name;
+        if (!Object.keys(p.colors).length) delete p.colors;
+      }, cx);
+    return h_flex()
+      .gap(4)
+      .items_center()
+      .child(
+        div()
+          .id(`st-sc-${key}-theme`)
+          .px(8)
+          .py(2)
+          .mr(4)
+          .rounded(6)
+          .text_size(12)
+          .cursor_pointer()
+          .when(chosen === null, (el) => el.bg(t.raised).text_color(t.foreground).border_1().border_color(t.border))
+          .when(chosen !== null, (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
+          .on_click((_e, cx) => choose(null, cx))
+          .child("Theme"),
+      )
+      .children(
+        STATUS_CHOICES.map((name) =>
+          div()
+            .id(`st-sc-${key}-${name}`)
+            .size(20)
+            .p(3)
+            .rounded(10)
+            .border_2()
+            .border_color(chosen === name ? t.foreground : "#00000000")
+            .cursor_pointer()
+            .hover((s) => s.border_color(chosen === name ? t.foreground : t.border))
+            .tooltip(name)
+            .on_click((_e, cx) => choose(name, cx))
+            .child(div().size_full().rounded(7).bg(t[name])),
+        ),
+      );
+  }
+
   // The font in use, written in itself; a click opens the list.
   fontButton(t, which, family) {
     const open = this.picking === which;
@@ -490,6 +545,14 @@ export default class Settings extends View {
       .child(this.themePicker(t, false))
       .child(div().pt(10).pb(6).text_size(12.5).font_medium().text_color(t.muted).child("Light"))
       .child(this.themePicker(t, true))
+      .child(div().h(18))
+      .child(this.heading(t, "Status colors"))
+      .child(div().pb(4).text_size(12.5).text_color(t.dim).child("How the sidebar, tabs and pane headers mark each session. A color follows the theme you pick."))
+      .children(
+        STATUSES.map(([key, title, about]) =>
+          this.row(t, h_flex().gap(8).items_center().child(div().size(8).rounded(4).bg(t[key])).child(title), about, this.statusColorPicker(t, key)),
+        ),
+      )
       .child(div().h(18))
       .child(this.heading(t, "Size and fonts"))
       .child(
