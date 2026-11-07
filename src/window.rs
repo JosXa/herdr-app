@@ -4499,7 +4499,11 @@ impl AppWindow {
                 .when(o.kind != OverlayKind::Window, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
                 .child(content);
             match o.kind {
-                OverlayKind::Window => out.push(self.render_window(o, body, viewport, pane, cx)),
+                OverlayKind::Window => {
+                    let set = |on: bool, v: Pixels, room: Pixels| on.then(|| v.min(room));
+                    let drawn_at = Size { width: set(sized(o.size.width), w, room.width), height: set(sized(o.size.height) && !o.fit, h, room.height) };
+                    out.push(self.render_window(o, body, drawn_at, viewport, pane, cx))
+                }
                 OverlayKind::Dialog => out.push(
                     div()
                         .absolute()
@@ -6053,12 +6057,11 @@ export default class Probe extends View {
             import { View, div } from 'gpui-kit';
             import { setShared } from 'herdr';
             export default class Viewer extends View {
-                width = 400;
                 render() {
                     return div().id('root').size_full().flex().flex_col()
-                        .on_size_change((size, cx) => { setShared('viewer.drawn', size); this.width = size.width; cx.notify(); })
+                        .on_size_change(size => setShared('viewer.drawn', size))
                         .child(div().flex_none().h(30))
-                        .child(div().flex_grow(1).flex_shrink(1).flex_basis(this.width * 1200 / 5760).min_h(0));
+                        .child(div().flex_grow(1).flex_shrink(1).flex_basis(400 * 1200 / 5760).min_h(0));
                 }
             }
         "#, json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
@@ -6080,40 +6083,44 @@ export default class Probe extends View {
             let size = crate::mods::shared("viewer.drawn").expect("the viewer reports the size it is drawn at");
             Bounds::new(origin, gpui::size(px(size["width"].as_f64().unwrap() as f32), px(size["height"].as_f64().unwrap() as f32)))
         };
-        // Shift + right drag, as Hyprland resizes a floating window.
-        let shift_right_drag = |cx: &mut VisualTestContext, from: Point<Pixels>, by: Point<Pixels>| {
+        // Where the viewer's window shows in the frame drawn last.
+        let shown = |cx: &mut VisualTestContext| view.update(cx, |this, _| this.bounds.borrow()["overlay:mod-viewer-probe@a"]);
+        // Shift + right drag, as Hyprland resizes a floating window. The pointer
+        // moves fast, so a new move arrives with every frame: the person sees the
+        // first frame drawn after each move, before anything else catches up. In
+        // every such frame the corner opposite the one pressed stays where it was.
+        let shift_right_drag = |cx: &mut VisualTestContext, from: Point<Pixels>, by: Point<Pixels>, fixed: fn(&Bounds<Pixels>) -> Point<Pixels>, corner: &str| {
+            let anchor = fixed(&drawn(cx));
             cx.simulate_mouse_move(from, None, Modifiers::shift());
             cx.simulate_mouse_down(from, MouseButton::Right, Modifiers::shift());
-            cx.run_until_parked();
-            for step in 1..=4 {
-                cx.simulate_mouse_move(from + by * (step as f32 / 4.), Some(MouseButton::Right), Modifiers::shift());
-                cx.run_until_parked();
+            for step in 1..=3 {
+                let position = from + by * (step as f32 / 3.);
+                cx.update(|window, cx| window.dispatch_event(MouseMoveEvent { position, pressed_button: Some(MouseButton::Right), modifiers: Modifiers::shift() }.to_platform_input(), cx));
+                assert_eq!(fixed(&shown(cx)), anchor, "the {corner} corner stays where it was in the first frame after move {step}");
             }
+            cx.run_until_parked();
             cx.simulate_mouse_up(from + by, MouseButton::Right, Modifiers::shift());
             cx.run_until_parked();
-            cx.run_until_parked();
+            assert_eq!(fixed(&drawn(cx)), anchor, "the {corner} corner stays where it was after letting go");
         };
         // Freshly opened, pressed near the top right and dragged up and right:
         // the top right corner follows the pointer, the bottom left corner stays.
         let before = drawn(cx);
-        shift_right_drag(cx, point(before.right() - px(30.), before.top() + px(20.)), point(px(60.), px(-80.)));
+        shift_right_drag(cx, point(before.right() - px(30.), before.top() + px(20.)), point(px(90.), px(-120.)), |b| b.bottom_left(), "bottom left");
         let after = drawn(cx);
-        assert_eq!(after.bottom_left(), before.bottom_left(), "the bottom left corner stays where it was");
-        assert_eq!(after.top_right(), before.top_right() + point(px(60.), px(-80.)), "the top right corner follows the pointer");
+        assert_eq!(after.top_right(), before.top_right() + point(px(90.), px(-120.)), "the top right corner follows the pointer");
         // Pressed near the bottom right and dragged down and right: the bottom
         // right corner follows the pointer, the top left corner stays.
         let before = after;
-        shift_right_drag(cx, before.bottom_right() - point(px(30.), px(20.)), point(px(30.), px(40.)));
+        shift_right_drag(cx, before.bottom_right() - point(px(30.), px(20.)), point(px(60.), px(90.)), |b| b.origin, "top left");
         let after = drawn(cx);
-        assert_eq!(after.origin, before.origin, "the top left corner stays where it was");
-        assert_eq!(after.bottom_right(), before.bottom_right() + point(px(30.), px(40.)), "the bottom right corner follows the pointer");
+        assert_eq!(after.bottom_right(), before.bottom_right() + point(px(60.), px(90.)), "the bottom right corner follows the pointer");
         // Pressed near the top left and dragged down: the top edge follows the
         // pointer down, the bottom right corner stays.
         let before = after;
-        shift_right_drag(cx, before.origin + point(px(30.), px(20.)), point(px(0.), px(30.)));
+        shift_right_drag(cx, before.origin + point(px(30.), px(20.)), point(px(0.), px(60.)), |b| b.bottom_right(), "bottom right");
         let after = drawn(cx);
-        assert_eq!(after.bottom_right(), before.bottom_right(), "the bottom right corner stays where it was");
-        assert_eq!(after.origin, before.origin + point(px(0.), px(30.)), "the top left corner follows the pointer");
+        assert_eq!(after.origin, before.origin + point(px(0.), px(60.)), "the top left corner follows the pointer");
     }
 
     #[test]

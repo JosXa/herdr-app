@@ -175,9 +175,10 @@ impl AppWindow {
 
     /// A window at its spot: where it was dropped, else centered once its size
     /// is known (it stays invisible until then), always partly on screen.
-    pub(super) fn render_window(&self, o: &Overlay, body: Stateful<Div>, viewport: Size<Pixels>, pane: Option<Bounds<Pixels>>, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_window(&self, o: &Overlay, body: Stateful<Div>, drawn_at: Size<Option<Pixels>>, viewport: Size<Pixels>, pane: Option<Bounds<Pixels>>, cx: &mut Context<Self>) -> AnyElement {
         let measured = self.bounds.borrow().get(&o.slot).map(|b| b.size);
-        let size = measured.unwrap_or_default();
+        let last = measured.unwrap_or_default();
+        let size = Size { width: drawn_at.width.unwrap_or(last.width), height: drawn_at.height.unwrap_or(last.height) };
         let area = pane.unwrap_or(Bounds { origin: Point::default(), size: viewport });
         let at = match (&self.win_drag, o.place, o.dock.filter(|_| pane.is_some())) {
             (Some(d), _, _) if d.id == o.id && d.moving => d.pointer - d.grab,
