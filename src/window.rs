@@ -393,6 +393,7 @@ pub struct AppWindow {
     bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     hidden_fit: pane_size::HiddenFit,
     growth: RefCell<crate::focus_grow::Growth>,
+    press_holds_growth: bool,
     drag: Option<Drag>,
     written_layout: String,
     /// The shown layout as its file has it; `chrome` is this plus the clicks
@@ -510,6 +511,7 @@ impl AppWindow {
             bounds: Default::default(),
             hidden_fit: Default::default(),
             growth: RefCell::new(growth),
+            press_holds_growth: false,
             drag: None,
             written_layout: String::new(),
             file_chrome: default_layout("main"),
@@ -5000,6 +5002,7 @@ impl Render for AppWindow {
         let overlays = self.render_overlays(window.viewport_size(), cx);
         let tracker = self.float_tracker(cx);
         let win_tracker = self.window_tracker(cx);
+        let press_tracker = self.press_tracker(cx);
         let pane_drag = self.pane_drag_layer(cx);
         div()
             .id("herdr")
@@ -5052,6 +5055,7 @@ impl Render for AppWindow {
             .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                 this.pointer = ev.position;
                 this.restoring_history = None;
+                this.hold_growth_for_press(cx);
                 if let MouseButton::Navigate(direction) = ev.button {
                     this.navigate_history(direction, window, cx);
                     cx.stop_propagation();
@@ -5090,6 +5094,7 @@ impl Render for AppWindow {
                     this.flush_documents(false, window, cx);
                 }
             }))
+            .children(press_tracker)
             .child(tree)
             .children(overlays)
             .children(tracker)

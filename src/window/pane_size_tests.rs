@@ -192,6 +192,59 @@ fn focus_growth_force_false_preserves_manual_resize() {
     in_own_process("focus_growth_force_command");
 }
 
+#[test]
+fn focus_growth_waits_for_the_focusing_click_to_end() {
+    in_own_process("focus_growth_click");
+}
+
+#[gpui::test]
+fn focus_growth_click(cx: &mut gpui::TestAppContext) {
+    use gpui::MouseButton;
+    use serde_json::json;
+    if !running_alone("focus_growth_click") { return; }
+    let layout = json!({"id":"context","type":"block","content":{"tab":"active","pane":{"gap":6}}});
+    let (view, cx) = open_window(cx, "size-probe", "export default () => null;", layout);
+    view.update_in(cx, |this, window, cx| {
+        this.model = crate::model::Model::default();
+        let mut tab = super::Tab::new("tab", "", "a", "probe-a");
+        tab.root.split("a", super::Axis::Row, crate::model::pane("b", "probe-b"), "split1".into());
+        tab.root.split("b", super::Axis::Row, crate::model::pane("c", "probe-c"), "split2".into());
+        tab.focus("a");
+        this.model.add_space("space", "test", "/", tab);
+        this.person.focus_grow = true;
+        this.sync(window, cx);
+    });
+    for _ in 0..2 { cx.update(|window, cx| window.draw(cx).clear(cx)); }
+    let (pressed, grid) = view.update(cx, |this, cx| (this.bounds.borrow()["b"], this.terms["b"].view.read(cx).dimensions()));
+    let at = pressed.center();
+    cx.simulate_mouse_down(at, MouseButton::Left, Default::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    view.update(cx, |this, cx| {
+        assert_eq!(this.model.active_tab().unwrap().focused_pane().as_deref(), Some("b"));
+        assert_eq!(this.bounds.borrow()["b"], pressed);
+        assert_eq!(this.terms["b"].view.read(cx).dimensions(), grid);
+    });
+    cx.simulate_mouse_move(at, Some(MouseButton::Left), Default::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    view.update(cx, |this, _| assert_eq!(this.bounds.borrow()["b"], pressed));
+    cx.simulate_mouse_up(at, MouseButton::Left, Default::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    view.update_in(cx, |this, window, cx| {
+        let bounds = this.bounds.borrow();
+        assert!(bounds["b"].size.width > pressed.size.width);
+        assert!(["a", "c"].into_iter().all(|id| bounds["b"].size.width > bounds[id].size.width));
+        let predicted = this.shown_size(this.model.active_tab().unwrap(), "b", window).unwrap();
+        assert_eq!(this.terms["b"].view.read(cx).dimensions(), predicted);
+    });
+    let pressed = view.update(cx, |this, _| this.bounds.borrow()["c"]);
+    cx.simulate_mouse_down(pressed.center(), MouseButton::Left, Default::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    view.update(cx, |this, _| assert_eq!(this.bounds.borrow()["c"], pressed));
+    cx.simulate_mouse_move(pressed.center(), None, Default::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    view.update(cx, |this, _| assert!(this.bounds.borrow()["c"].size.width > pressed.size.width));
+}
+
 #[gpui::test]
 fn focus_growth_force_command(cx: &mut gpui::TestAppContext) {
     use serde_json::json;

@@ -159,7 +159,7 @@ impl AppWindow {
         let _timed = crate::bench::timed(&crate::bench::GROW_US);
         let mut growth = self.growth.borrow_mut();
         let before = growth.solves;
-        let grown = growth.derive(&tab.id, tab.shown(), &target, area, cell, self.person.focus_grow && self.drag.is_none(), tab.zoomed.is_some());
+        let grown = growth.derive(&tab.id, tab.shown(), &target, area, cell, self.person.focus_grow && self.drag.is_none() && !self.press_holds_growth, tab.zoomed.is_some());
         if growth.solves != before { crate::bench::count(&crate::bench::GROW_SOLVE); }
         Some(grown)
     }
@@ -168,6 +168,49 @@ impl AppWindow {
         if let Some(tab) = self.model.tab_of(node) && let Some(target) = tab.focused_pane() {
             self.growth.borrow_mut().manual(&tab.id, &tab.root, &target);
         }
+    }
+
+    pub(super) fn hold_growth_for_press(&mut self, cx: &mut Context<Self>) {
+        if !self.press_holds_growth {
+            self.press_holds_growth = true;
+            cx.notify();
+        }
+    }
+
+    fn release_growth_after_press(&mut self, cx: &mut Context<Self>) {
+        if self.press_holds_growth {
+            self.press_holds_growth = false;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn press_tracker(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.press_holds_growth {
+            return None;
+        }
+        let this = cx.entity().downgrade();
+        Some(
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    let t = this.clone();
+                    window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Capture && ev.pressed_button.is_none() {
+                            let _ = t.update(cx, |this, cx| this.release_growth_after_press(cx));
+                        }
+                    });
+                    let t = this.clone();
+                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Capture {
+                            let _ = t.update(cx, |this, cx| this.release_growth_after_press(cx));
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_full()
+            .into_any_element(),
+        )
     }
 
     pub(super) fn begin_growth_resize(&mut self, node: &str) {
