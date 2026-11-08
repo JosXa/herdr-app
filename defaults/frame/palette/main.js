@@ -35,6 +35,7 @@ const NAMED = [
   ["pane.next", {}, "Pane", "Focus next pane", "cycle"],
   ["pane.prev", {}, "Pane", "Focus previous pane", "cycle"],
   ["pane.back", {}, "Pane", "Back to previous pane", "history return"],
+  ["pane.forward", {}, "Pane", "Forward to next pane", "history"],
   ...["left", "right", "up", "down"].map((d) => ["pane.swap", { direction: d }, "Pane", `Swap pane ${d}`, "move"]),
   ["space.new", {}, "Space", "New space", "workspace"],
   ["space.rename", {}, "Space", "Rename space", "workspace"],

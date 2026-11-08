@@ -3102,7 +3102,10 @@ impl AppWindow {
                 self.swapped.remove(&p);
             }
             "pane.next" | "pane.prev" => return self.cycle_pane(name == "pane.next", window, cx),
-            "pane.back" => return self.navigate_history(gpui::NavigationDirection::Back, a.get("other_space").and_then(Value::as_bool) == Some(true), window, cx),
+            "pane.back" | "pane.forward" => {
+                let direction = if name == "pane.back" { gpui::NavigationDirection::Back } else { gpui::NavigationDirection::Forward };
+                return self.navigate_history(direction, a.get("other_space").and_then(Value::as_bool) == Some(true), window, cx);
+            }
             "pane.go" | "pane.swap" => {
                 let dir = Self::arg(a, "direction").unwrap_or_default();
                 if !matches!(dir, "left" | "right" | "up" | "down") {
@@ -6005,6 +6008,9 @@ export default class Probe extends View {
         cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.back", json!({}), window, cx)));
         cx.run_until_parked();
         cx.update(|window, cx| view.update(cx, |this, cx| assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("b"))));
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.forward", json!({}), window, cx)));
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |this, cx| assert_eq!(this.keyboard_pane(window, cx).as_deref(), Some("b2"))));
     }
 
     #[test]
