@@ -1053,7 +1053,7 @@ All of it is in `herdr.d.ts`. In short:
   replaces it); `keep: true` with a key reopens it on the next start. A
   layout switch closes windows; kept ones come back with their layout.
   `resizable: true` lets people resize it by its edges and corners (240×160
-  at the least), or with Shift + right drag anywhere on it as in Hyprland: the
+  at the least, or `min_width` / `min_height` when larger), or with Shift + right drag anywhere on it as in Hyprland: the
   corner of the quarter pressed follows the pointer while the opposite one
   stays put (a pane window docks to it); with a key it opens at the size it was left at. Without a
   `height` it stays as tall as its content until a top or bottom drag fixes

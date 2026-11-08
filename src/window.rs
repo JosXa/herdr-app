@@ -331,6 +331,8 @@ struct Overlay {
     key: Option<String>,
     /// `resizable: true`: a window people resize by its edges and corners.
     resizable: bool,
+    /// `min_width` / `min_height`: the smallest a resize leaves it, px at zoom 1.
+    min: Size<f32>,
     /// `pane` (or `terminal`): a window inside that pane, shown only while
     /// the pane is, and docked to the corner it was last left nearest.
     pane: Option<String>,
@@ -3715,10 +3717,11 @@ impl AppWindow {
         let top = (spec.get("at").and_then(Value::as_str) == Some("top")).then(|| num("offset", 0.0));
         let fit = layout.is_none() && (kind == OverlayKind::Popup || (matches!(kind, OverlayKind::Dialog | OverlayKind::Window) && spec.get("height").is_none()));
         let resizable = kind == OverlayKind::Window && spec.get("resizable").and_then(Value::as_bool) == Some(true);
+        let min = Size { width: num("min_width", 0.0).max(movable::MIN_WIDTH), height: num("min_height", 0.0).max(movable::MIN_HEIGHT) };
         let resized = key.as_deref().filter(|_| resizable).and_then(movable::size_of);
         let size = match resized {
-            Some(r) if fit => Size { width: r.width, height: size.height },
-            Some(r) => r,
+            Some(r) if fit => Size { width: r.width.max(min.width), height: size.height },
+            Some(r) => Size { width: r.width.max(min.width), height: r.height.max(min.height) },
             None => size,
         };
         if kind == OverlayKind::Window && pane.is_none() && place.is_none() && spec.get("at").is_some_and(|v| v.get("x").is_some()) {
@@ -3762,6 +3765,7 @@ impl AppWindow {
             place,
             key: key.clone(),
             resizable,
+            min,
             pane,
             dock,
             pinned,
@@ -6098,6 +6102,47 @@ export default class Probe extends View {
         let (shown, area) = placed(cx);
         assert_eq!(shown.bottom_right(), area.bottom_right(), "a drag leaves it in its corner");
         assert!(super::movable::dock_of("edge-probe").is_none(), "nothing is remembered for it");
+    }
+
+    #[test]
+    fn a_resize_stops_at_the_windows_min_width() {
+        in_own_process("pane_window_min_width");
+    }
+
+    #[gpui::test]
+    fn pane_window_min_width(cx: &mut gpui::TestAppContext) {
+        use gpui::*;
+        use serde_json::json;
+        if !running_alone("pane_window_min_width") { return; }
+        let (view, cx) = open_window(cx, "floor-probe", r#"
+            import { View, div } from 'gpui-kit';
+            export default class Probe extends View {
+                render() { return div().w_full().h(200); }
+            }
+        "#, json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        std::fs::write(crate::mods::app_dir().join("mods/floor-probe/mod.json"),
+            r#"{ "place": "none", "overlay": { "kind": "window", "key": "floor-probe", "width": 500, "min_width": 380, "frame": "none", "resizable": true } }"#).unwrap();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model = Default::default();
+            this.model.add_space("space", "space", "", crate::model::Tab::new("tab", "tab", "a", "t-a"));
+            this.documents.entry(String::new()).or_default().available = true;
+            window.activate_window();
+            this.sync(window, cx);
+            this.run("mod.show", json!({ "name": "floor-probe", "pane": "a" }), window, cx);
+        }));
+        cx.run_until_parked();
+        cx.run_until_parked();
+        let shown = |cx: &mut VisualTestContext| view.update(cx, |this, _| this.bounds.borrow()["overlay:mod-floor-probe@a"]);
+        let before = shown(cx);
+        assert_eq!(before.size.width, px(500.), "it opens at its width");
+        let from = point(before.right() - px(20.), before.top() + px(20.));
+        cx.simulate_mouse_move(from, None, Modifiers::shift());
+        cx.simulate_mouse_down(from, MouseButton::Right, Modifiers::shift());
+        cx.simulate_mouse_move(from - point(px(300.), px(0.)), Some(MouseButton::Right), Modifiers::shift());
+        cx.run_until_parked();
+        cx.simulate_mouse_up(from - point(px(300.), px(0.)), MouseButton::Right, Modifiers::shift());
+        cx.run_until_parked();
+        assert_eq!(shown(cx).size.width, px(380.), "a resize stops at min_width");
     }
 
     #[test]

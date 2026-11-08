@@ -370,6 +370,10 @@ export interface OverlaySpec {
    *  it stays as tall as its content until a top or bottom drag fixes its height. With `key` it
    *  also remembers its size (only the width without a `height`) and opens at it next time. */
   resizable?: boolean;
+  /** The smallest a resize leaves a `resizable` window, px at zoom 1 (240 and 160 at the least);
+   *  a remembered smaller size opens at it. */
+  min_width?: number;
+  min_height?: number;
   /** A window inside this pane: shown only while the pane is, kept inside it below its header, 10px clear
    *  of its edges, docked to the
    *  corner it's left nearest, closed with the pane. Its props() get `pane` and `terminal`. */

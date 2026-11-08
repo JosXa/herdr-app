@@ -22,8 +22,8 @@ const KEEP_SHOWN: f32 = 48.0;
 /// How far a resizable window's grips reach into and beyond its edge, px.
 const GRIP: f32 = 5.0;
 /// The smallest a resize leaves a window, px at zoom 1.
-const MIN_WIDTH: f32 = 240.0;
-const MIN_HEIGHT: f32 = 160.0;
+pub(super) const MIN_WIDTH: f32 = 240.0;
+pub(super) const MIN_HEIGHT: f32 = 160.0;
 /// How far a pane window stays from its pane's edges, px at zoom 1.
 const PANE_MARGIN: f32 = 10.0;
 
@@ -290,7 +290,8 @@ impl AppWindow {
         }
         let Some(r) = &mut self.win_resize else { return };
         r.moved = true;
-        let (min_w, min_h) = (settings::z(MIN_WIDTH), settings::z(MIN_HEIGHT));
+        let floor = self.overlays.iter().find(|o| o.id == r.id).map_or(size(MIN_WIDTH, MIN_HEIGHT), |o| o.min);
+        let (min_w, min_h) = (settings::z(floor.width), settings::z(floor.height));
         let (d, b) = (at - r.down, r.start);
         let span = |s: i8, from: Pixels, length: Pixels, delta: Pixels, min: Pixels| match s {
             1 => (from, (length + delta).max(min)),
