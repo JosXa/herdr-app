@@ -851,6 +851,9 @@ pub const BUNDLED_FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/GeistMono-Variable.ttf"),
     include_bytes!("../assets/fonts/GeistMono-Italic-Variable.ttf"),
     include_bytes!("../assets/fonts/Geist.ttf"),
+    include_bytes!("../assets/fonts/Geist-Medium.ttf"),
+    include_bytes!("../assets/fonts/Geist-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/Geist-Bold.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Variable.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Italic-Variable.ttf"),
     SYMBOLS_FONT_FILE,
@@ -867,6 +870,23 @@ pub const DEFAULT_FONT: &str = "JetBrains Mono";
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bundled_ui_font_has_a_face_for_every_ui_weight() {
+        use gpui::{FontWeight, TextSystem};
+        use std::{borrow::Cow, sync::Arc};
+
+        let system = TextSystem::new(Arc::new(gpui_wgpu::CosmicTextSystem::new_without_system_fonts(super::DEFAULT_FONT)));
+        system.add_fonts(super::BUNDLED_FONTS.iter().map(|font| Cow::Borrowed(*font)).collect()).unwrap();
+        let faces: Vec<_> = [FontWeight::NORMAL, FontWeight::MEDIUM, FontWeight::SEMIBOLD, FontWeight::BOLD]
+            .into_iter()
+            .map(|weight| system.resolve_font(&gpui::Font { weight, ..gpui::font("Geist") }))
+            .collect();
+        for (index, face) in faces.iter().enumerate() {
+            assert!(!faces[..index].contains(face), "Geist weight #{index} renders with a lighter face");
+        }
+    }
+
     #[test]
     fn terminal_ligatures_default_off_and_can_be_enabled() {
         use super::*;
