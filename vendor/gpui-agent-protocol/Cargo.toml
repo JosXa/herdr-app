@@ -1,0 +1,12 @@
+[package]
+name = "gpui-agent-protocol"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/wsp-labs/gpui-agent"
+description = "The messages between the gpui-agent command line and a GPUI app"
+
+# Both workspaces use this crate, so it names its own settings instead of inheriting them.
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.144"

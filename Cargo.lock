@@ -2876,6 +2876,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "gpui-agent-protocol",
+ "gpui-pre",
+ "image",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "gpui-agent-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "gpui-base"
 version = "0.7.1"
 dependencies = [
@@ -3703,6 +3724,7 @@ dependencies = [
  "base64",
  "fancy-regex 0.19.2",
  "ghostty-sys",
+ "gpui-agent",
  "gpui-base",
  "gpui-pre",
  "gpui-pre-linux",

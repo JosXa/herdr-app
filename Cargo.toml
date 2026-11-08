@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/ghostty-sys"]
-exclude = ["vendor/gpui-kit", "vendor/gpui-pre", "vendor/gpui-pre-wgpu", "vendor/gpui-pre-apple", "vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-windows", "vendor/taffy", "vendor/quickjs-jit-runtime", "vendor/zed-xim", "vendor/xim-ctext"]
+exclude = ["vendor/gpui-kit", "vendor/gpui-pre", "vendor/gpui-pre-wgpu", "vendor/gpui-pre-apple", "vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-windows", "vendor/taffy", "vendor/quickjs-jit-runtime", "vendor/zed-xim", "vendor/xim-ctext", "vendor/gpui-agent", "vendor/gpui-agent-protocol"]
 resolver = "2"
 
 [workspace.package]
@@ -35,6 +35,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 fancy-regex = "0.19"
 notify = "7"
 sha2 = "0.10"
+gpui-agent = { path = "vendor/gpui-agent", features = ["gpui-pre-0-3-9"], optional = true }
+
+[features]
+agent = ["dep:gpui-agent"]
 
 [[test]]
 name = "shot_pixels"

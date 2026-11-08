@@ -2005,6 +2005,32 @@ impl PlatformInputHandler {
             .flatten()
     }
 
+    pub(crate) fn driver_insert_text(&mut self, text: &str, window: &mut Window, cx: &mut App) {
+        self.handler.replace_text_in_range(None, text, window, cx);
+    }
+
+    pub(crate) fn driver_replace_all_text(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let mut document = None;
+        if self
+            .handler
+            .text_for_range(0..usize::MAX, &mut document, window, cx)
+            .is_none()
+        {
+            return false;
+        }
+        let Some(document) = document else {
+            return false;
+        };
+        self.handler
+            .replace_text_in_range(Some(document), text, window, cx);
+        true
+    }
+
     pub fn replace_text_in_range(&mut self, replacement_range: Option<Range<usize>>, text: &str) {
         self.cx
             .update(|window, cx| {
@@ -2766,6 +2792,20 @@ pub enum TextRenderingMode {
     Subpixel,
     /// Use grayscale text rendering.
     Grayscale,
+}
+
+/// A file panel request, as given to a hook set with [`App::set_path_prompt_hook`].
+#[derive(Debug, Clone)]
+pub enum PathPrompt {
+    /// The app asked for existing paths.
+    Open(PathPromptOptions),
+    /// The app asked for a path to save to.
+    Save {
+        /// The folder the panel would open in.
+        directory: std::path::PathBuf,
+        /// The file name the app suggested.
+        suggested_name: Option<String>,
+    },
 }
 
 /// The options that can be configured for a file dialog prompt
