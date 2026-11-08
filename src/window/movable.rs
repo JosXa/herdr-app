@@ -57,6 +57,11 @@ pub struct Dock {
 }
 
 impl Dock {
+    /// Flush in a corner of its pane, as a spec's `dock` asks.
+    pub fn corner(right: bool, bottom: bool) -> Dock {
+        Dock { gap: point(px(0.0), px(0.0)), right, bottom }
+    }
+
     fn of(window: Bounds<Pixels>, area: Bounds<Pixels>) -> Dock {
         Dock::anchored(window, area, window.center().x > area.center().x, window.center().y > area.center().y)
     }
@@ -383,7 +388,8 @@ impl AppWindow {
             let bounds = self.bounds.borrow();
             l.visible_blocks().iter().any(|n| matches!(n.content(), Some(Content::Terminal { .. })) && bounds.get(&n.id).is_some_and(|b| b.contains(&at)))
         });
-        if on_terminal {
+        let pinned = self.overlays.iter().any(|o| o.id == id && o.pinned);
+        if on_terminal || pinned {
             return;
         }
         let Some(b) = self.bounds.borrow().get(&format!("overlay:{id}")).copied() else { return };

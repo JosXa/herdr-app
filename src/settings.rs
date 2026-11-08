@@ -416,6 +416,9 @@ pub struct Person {
     pub theme: Option<crate::layout::ThemeChoice>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub colors: BTreeMap<String, String>,
+    /// Each mod's own settings by mod name, as its mod.json `settings` declares them.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub mods: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -474,6 +477,7 @@ impl Default for Person {
             appearance: Appearance::System,
             theme: None,
             colors: BTreeMap::new(),
+            mods: BTreeMap::new(),
         }
     }
 }
@@ -510,6 +514,8 @@ pub struct Settings {
     pub minimum_contrast: f32,
     pub option_as_alt: OptionAsAlt,
     pub sounds: Sounds,
+    /// The person's settings for each mod, by mod name.
+    pub mods: BTreeMap<String, serde_json::Value>,
 }
 
 /// Attention sounds: when an agent needs you, and when one finished while you
@@ -553,6 +559,7 @@ impl Default for Settings {
             minimum_contrast: 1.0,
             option_as_alt: OptionAsAlt::Auto,
             sounds: Sounds::default(),
+            mods: BTreeMap::new(),
         }
     }
 }
@@ -592,6 +599,7 @@ impl Settings {
             clipboard_write: person.clipboard_write,
             minimum_contrast: person.minimum_contrast,
             option_as_alt: person.option_as_alt,
+            mods: person.mods.clone(),
         }
     }
 }
@@ -873,6 +881,16 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn mod_settings_reach_mods_and_survive_a_zoom_change() {
+        let person: Person = serde_json::from_str(r#"{ "zoom": 1.5, "mods": { "pane-actions": { "placement": "right" } } }"#).unwrap();
+        let shown = Settings::compose(&person, &crate::layout::Look::default(), true);
+        assert_eq!(shown.mods["pane-actions"]["placement"], "right");
+        let written: Person = serde_json::from_str(&serde_json::to_string(&Person { zoom: 2.0, ..person }).unwrap()).unwrap();
+        assert_eq!(written.mods["pane-actions"]["placement"], "right");
+        assert!(!serde_json::to_string(&Person::default()).unwrap().contains("mods"));
+    }
 
     #[test]
     fn colors_can_name_a_theme_color() {

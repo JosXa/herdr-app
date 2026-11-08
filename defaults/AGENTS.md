@@ -854,6 +854,13 @@ selection and IME can lag the retained content until completion or timeout.
   editor, add `"paths": { "@lib/*": ["../../lib/*"] }` to the mod's
   `jsconfig.json` `compilerOptions`.
 
+- `"settings"` in `mod.json` lists choices Settings > Look shows under the
+  mod's `title`: `[{ "key": "placement", "title": "Placement", "about": "…",
+  "choices": [["bottom", "Bottom"], ["right", "Right"]], "default": "bottom" }]`.
+  A choice other than the default is kept in settings.json as
+  `"mods": { "<mod>": { "<key>": value } }`; the mod reads
+  `settings().mods?.[name]?.[key] ?? default` and re-renders when it changes.
+
 - `"focusable": true` in `mod.json` lets `pane.go` give a shown copy the keyboard.
   It gets `"focus"` from `nextCommand()`: focus your own handle then
   (`this.handle.focus()`) and handle keys with `on_key_down`. The copy gets `"focus"`
@@ -1060,6 +1067,10 @@ All of it is in `herdr.d.ts`. In short:
   the dock for every pane). It closes with its pane, and its `props()` carry
   `pane` and `terminal`. `mod.open {name, pane?|terminal?}` toggles one per
   pane; `mod.show` opens it the same way but leaves an open one open.
+  `dock: { right?, bottom? }` on a pane window pins it flush in that corner
+  of the pane's room: presses don't drag it and nothing is remembered. With
+  `width: 1` (or `height: 1`) it is a strip along that edge, e.g. a 2px
+  strip whose `Popup` hangs a tab over the pane border.
   A window can hold a layout, terminals too: a terminal keeps its presses
   (selecting text), so give it a mod block to drag by, a title bar:
   `openOverlay({ kind: "window", key: "t7", width: 600, height: 400, layout: { type: "column", children: [{ type: "block", size: { px: 28 }, content: { mod: "my-titlebar" } }, { type: "block", content: { terminal: "t7" } }] } })`.

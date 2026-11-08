@@ -332,7 +332,9 @@ export function feedbackClearImages(): null;
 export function sendFeedback(body: import("gpui-kit").HostValue, images?: string[]): Promise<string | null>;
 
 /** What the app runs with: the shown layout's look (theme name, fonts, sizes, terminal
- *  padding and opacity) with the person's zoom and sounds. */
+ *  padding and opacity) with the person's zoom and sounds. `mods` holds what each mod's
+ *  mod.json `settings` let the person choose: `settings().mods?.[name]?.[key]`, absent while
+ *  the default holds. */
 export function settings(): Record<string, unknown>;
 
 /** Every key binding: { section, keys, action }. */
@@ -374,6 +376,10 @@ export interface OverlaySpec {
   pane?: string;
   /** Like `pane`: the pane showing this terminal. */
   terminal?: string;
+  /** A pane window's corner: it opens flush in that corner of the pane's area and stays there
+   *  (presses don't drag it, nothing is remembered). With width 1 or height 1 it is a strip along
+   *  that edge. */
+  dock?: { right?: boolean; bottom?: boolean };
   /** px, or up to 1: a share of the window (of the pane, for a pane window). */
   width?: number;
   height?: number;

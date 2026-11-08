@@ -335,6 +335,8 @@ struct Overlay {
     /// the pane is, and docked to the corner it was last left nearest.
     pane: Option<String>,
     dock: Option<movable::Dock>,
+    /// `dock` on a pane window: it stays flush in that pane corner, and presses don't move it.
+    pinned: bool,
     /// The app's own screen (a `frame-` mod: What's new, the welcome): only
     /// its own close ends it, never a layout switch.
     frame: bool,
@@ -3669,6 +3671,12 @@ impl AppWindow {
             dock = old.2.or(dock);
             self.remove_overlay(&old.0, window, cx);
         }
+        let pinned = spec.get("dock").filter(|d| d.is_object() && pane.is_some());
+        if let Some(d) = pinned {
+            let flag = |k: &str| d.get(k).and_then(Value::as_bool).unwrap_or(false);
+            dock = Some(movable::Dock::corner(flag("right"), flag("bottom")));
+        }
+        let pinned = pinned.is_some();
         let layout = spec.get("layout").filter(|_| kind != OverlayKind::Toast).and_then(|l| match serde_json::from_value::<Node>(l.clone()) {
             Ok(n) => Some(overlay_layout(n, &id)),
             Err(e) => {
@@ -3753,6 +3761,7 @@ impl AppWindow {
             resizable,
             pane,
             dock,
+            pinned,
             frame: spec.get("mod").and_then(Value::as_str).is_some_and(|m| m.starts_with("frame-")),
         });
         if let Some(k) = &key {
@@ -6038,6 +6047,51 @@ export default class Probe extends View {
         assert_eq!(view.update(cx, |this, _| this.model.focused_pane()).as_deref(), Some("b"));
         cx.update(|window, cx| view.update(cx, |this, cx| this.run("pane.next", json!({}), window, cx)));
         assert_eq!(view.update(cx, |this, _| this.model.focused_pane()).as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn a_docked_pane_window_stays_flush_in_its_corner() {
+        in_own_process("pane_window_dock");
+    }
+
+    #[gpui::test]
+    fn pane_window_dock(cx: &mut gpui::TestAppContext) {
+        use gpui::*;
+        use serde_json::json;
+        if !running_alone("pane_window_dock") { return; }
+        let (view, cx) = open_window(cx, "edge-probe", r#"
+            import { View, div } from 'gpui-kit';
+            export default class Edge extends View {
+                render() { return div().id('root').size_full(); }
+            }
+        "#, json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        std::fs::write(crate::mods::app_dir().join("mods/edge-probe/mod.json"),
+            r#"{ "place": "none", "overlay": { "kind": "window", "key": "edge-probe", "width": 1, "height": 40, "frame": "none", "dock": { "right": true, "bottom": true } } }"#).unwrap();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model = Default::default();
+            this.model.add_space("space", "space", "", crate::model::Tab::new("tab", "tab", "a", "t-a"));
+            this.documents.entry(String::new()).or_default().available = true;
+            window.activate_window();
+            this.sync(window, cx);
+            this.run("mod.show", json!({ "name": "edge-probe", "pane": "a" }), window, cx);
+        }));
+        cx.run_until_parked();
+        cx.run_until_parked();
+        let placed = |cx: &mut VisualTestContext| view.update(cx, |this, _| {
+            let area = this.overlays.iter().find(|o| o.pane.as_deref() == Some("a")).and_then(|o| this.pane_area(o)).expect("the window sits in pane a");
+            (this.bounds.borrow()["overlay:mod-edge-probe@a"], area)
+        });
+        let (shown, area) = placed(cx);
+        assert_eq!(shown.bottom_right(), area.bottom_right(), "it opens flush in the bottom right corner of its pane");
+        assert_eq!(shown.size.width, area.size.width, "a width of 1 spans the pane");
+        let from = shown.center();
+        cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(from - point(px(0.), px(120.)), Some(MouseButton::Left), Modifiers::none());
+        cx.simulate_mouse_up(from - point(px(0.), px(120.)), MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        let (shown, area) = placed(cx);
+        assert_eq!(shown.bottom_right(), area.bottom_right(), "a drag leaves it in its corner");
+        assert!(super::movable::dock_of("edge-probe").is_none(), "nothing is remembered for it");
     }
 
     #[test]

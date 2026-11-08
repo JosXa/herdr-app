@@ -3,6 +3,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
 import { hc, run, theme, themes, fonts, updates, telemetry, settings, layouts, shared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, window } from "herdr";
+import * as fs from "fs/promises";
 
 const I = (name) => `frame/settings/${name}.svg`;
 
@@ -54,6 +55,7 @@ export default class Settings extends View {
     });
     this.person = {};
     this.raw = null;
+    this.modSettings = []; // { mod, title, settings } for each mod.json that declares settings
     this.previews = {}; // layout name -> its "preview" picture
     this.previewsOf = "";
     this.showData = false;
@@ -69,6 +71,10 @@ export default class Settings extends View {
     cx.spawn(async (cx) => {
       await this.load();
       if (this.section === "machines") await this.loadMachines();
+      cx.notify();
+    });
+    cx.spawn(async (cx) => {
+      await this.loadModSettings();
       cx.notify();
     });
     // After "Check now": follow the look (the answer comes from the app), then
@@ -115,6 +121,58 @@ export default class Settings extends View {
     } catch {
       this.person = {};
     }
+  }
+
+  // A mod.json may declare `settings`: choices the person makes for that mod, kept
+  // in settings.json under `mods.<mod>`.
+  async loadModSettings() {
+    const dir = `${appHome()}/mods`;
+    let names = [];
+    try {
+      names = (await fs.readdir(dir)).sort();
+    } catch {}
+    const found = [];
+    for (const mod of names) {
+      try {
+        const meta = JSON.parse((await readTextFile(`${dir}/${mod}/mod.json`)) ?? "{}");
+        const declared = (Array.isArray(meta.settings) ? meta.settings : []).filter(
+          (s) => typeof s?.key === "string" && Array.isArray(s.choices) && s.choices.length,
+        );
+        if (declared.length) found.push({ mod, title: typeof meta.title === "string" ? meta.title : mod, settings: declared });
+      } catch {}
+    }
+    this.modSettings = found;
+  }
+
+  modChoicePicker(t, mod, setting) {
+    const fallback = setting.default ?? setting.choices[0][0];
+    const chosen = this.person.mods?.[mod]?.[setting.key] ?? fallback;
+    const choose = (value, cx) =>
+      this.change((p) => {
+        p.mods = { ...p.mods, [mod]: { ...p.mods?.[mod] } };
+        if (value === fallback) delete p.mods[mod][setting.key];
+        else p.mods[mod][setting.key] = value;
+        if (!Object.keys(p.mods[mod]).length) delete p.mods[mod];
+        if (!Object.keys(p.mods).length) delete p.mods;
+      }, cx);
+    return h_flex()
+      .gap(4)
+      .items_center()
+      .children(
+        setting.choices.map(([value, label], i) =>
+          div()
+            .id(`st-mod-${mod}-${setting.key}-${i}`)
+            .px(8)
+            .py(2)
+            .rounded(6)
+            .text_size(12)
+            .cursor_pointer()
+            .when(chosen === value, (el) => el.bg(t.raised).text_color(t.foreground).border_1().border_color(t.border))
+            .when(chosen !== value, (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
+            .on_click((_e, cx) => choose(value, cx))
+            .child(String(label ?? value)),
+        ),
+      );
   }
 
   // Changes settings.json the way an agent would: read, change, write back
@@ -554,6 +612,13 @@ export default class Settings extends View {
         ),
       )
       .child(div().h(18))
+      .children(
+        this.modSettings.flatMap(({ mod, title, settings: declared }) => [
+          this.heading(t, title),
+          ...declared.map((setting) => this.row(t, setting.title ?? setting.key, setting.about ?? null, this.modChoicePicker(t, mod, setting))),
+          div().h(18),
+        ]),
+      )
       .child(this.heading(t, "Size and fonts"))
       .child(
         this.row(
