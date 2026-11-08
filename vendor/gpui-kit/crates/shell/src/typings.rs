@@ -2090,6 +2090,15 @@ const ELEMENTS: &str = r#"
    */
   export function image(path: string): NativeElement;
 
+  /**
+   * An `image` for one frame of a video. Every reel shares one small cache
+   * that drops the oldest decoded frame, where `image` keeps each picture for
+   * good, so stepping through thousands of frames stays light. Draw the next
+   * few frames hidden beside the shown one to have them ready, and never more
+   * than 48 reels at once, or they evict each other forever.
+   */
+  export function reel(path: string): NativeElement;
+
   /** The visible items, as a half-open `[start, end)` interval. */
   export interface ItemRange {
     start: number;

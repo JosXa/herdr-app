@@ -314,6 +314,11 @@ pub(crate) enum Component {
     AvatarFallback,
     /// A full-color image, loaded from the application's own directory.
     Image(String),
+    // HERDR: video frames.
+    /// An image like [`Component::Image`] whose decoded picture lives in a
+    /// small shared cache that lets the oldest go, so stepping through a
+    /// video's frames does not keep every one in memory.
+    Reel(String),
     /// A native GPUI path. Its geometry is retained in method operations and
     /// resolved against final element bounds during prepaint.
     Path {
@@ -692,6 +697,7 @@ impl Component {
             Component::OtpInput(_) => "OtpInput",
             Component::Svg(_) => "svg",
             Component::Image(_) => "image",
+            Component::Reel(_) => "reel",
             Component::Accordion(_) => "Accordion",
             Component::AccordionItem => "AccordionItem",
             Component::AccordionHeader => "AccordionHeader",
@@ -1338,6 +1344,7 @@ impl SpecArena {
             | Component::Switch(value)
             | Component::Svg(value)
             | Component::Image(value)
+            | Component::Reel(value)
             | Component::Tabs(value)
             | Component::Tab(value)
             | Component::Progress(value)

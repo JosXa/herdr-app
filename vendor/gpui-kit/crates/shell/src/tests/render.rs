@@ -5829,6 +5829,44 @@ export default class Note extends View {
     context.update(|_, cx| assert_eq!(body.read(cx).value().as_ref(), ""));
 }
 
+// HERDR: `reel`.
+#[gpui::test]
+fn reels_keep_only_the_newest_frames(cx: &mut TestAppContext) {
+    cx.update(|cx| crate::init(cx));
+    let runtime = ShellRuntime::new_isolated().expect("runtime");
+    cx.update(|cx| runtime.set_global(cx));
+    let source = r#"
+import { View, div, reel } from "gpui-kit";
+export default class Film extends View {
+  init() { this.frame = 0; }
+  render(cx) {
+    return div().id("film").w(100).h(100)
+      .on_click((_event, cx) => { this.frame += 1; cx.notify(); })
+      .child(reel(`frames/${this.frame}.jpg`).w(8).h(8));
+  }
+}
+"#;
+    let view_type = runtime.load_source("film", source).expect("load");
+    let runtime_for_view = runtime.clone();
+    let (_root, context) = cx.add_window_view(move |window, cx| {
+        let object = runtime_for_view
+            .instantiate(&view_type, window, cx)
+            .expect("instantiate");
+        let view = cx.new(|_| ScriptView::new(runtime_for_view, object));
+        crate::root::ShellRoot::new(view.into(), window, cx)
+    });
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    for _ in 0..60 {
+        context.simulate_click(gpui::point(gpui::px(10.), gpui::px(10.)), gpui::Modifiers::none());
+        context.run_until_parked();
+        context.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    context.update(|_, cx| {
+        let kept = crate::materialize::reel::cache(cx).read(cx).len();
+        assert_eq!(kept, crate::materialize::reel::KEEP);
+    });
+}
+
 #[gpui::test]
 fn an_unknown_input_event_names_the_valid_ones(cx: &mut TestAppContext) {
     cx.update(|cx| crate::init(cx));

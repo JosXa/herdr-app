@@ -136,6 +136,8 @@ use gpui_base::{
 };
 
 mod components;
+// HERDR: `reel`.
+pub(crate) mod reel;
 mod text_view;
 
 use crate::{
@@ -1491,6 +1493,19 @@ fn materialize_component(
                 *path = crate::AppAssets::cache_key(path);
             }
             let mut image = gpui::img(source).id(element_id(id, behavior.key.clone()));
+            image.style().refine(&refinement);
+            image.into_any_element()
+        }
+        // HERDR: `reel`.
+        Component::Reel(path) => {
+            warn_unhonoured_a11y(&behavior, "reel", &[]);
+            let mut source = gpui::ImageSource::from(path);
+            if let gpui::ImageSource::Resource(gpui::Resource::Embedded(path)) = &mut source {
+                *path = crate::AppAssets::cache_key(path);
+            }
+            let mut image = gpui::img(source)
+                .image_cache(&reel::cache(cx))
+                .id(element_id(id, behavior.key.clone()));
             image.style().refine(&refinement);
             image.into_any_element()
         }

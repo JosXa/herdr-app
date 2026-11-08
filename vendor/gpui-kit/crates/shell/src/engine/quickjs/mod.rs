@@ -1122,6 +1122,8 @@ pub(crate) mod exports {
         "div",
         "svg",
         "image",
+        // HERDR: video frames.
+        "reel",
         // GPUI's own lazy lists. Base's virtual lists live in `gpui-base`;
         // these are GPUI's, and are exported where `div` is.
         "list",
@@ -6877,6 +6879,7 @@ globalThis.__gpui = (() => {
     v_flex: () => element(__v_flex()),
     svg: (path) => element(__svg(String(path))),
     image: (path) => element(__image(String(path))),
+    reel: (path) => element(__reel(String(path))),
     PathBuilder: {
       fill: () => pathBuilder(true, 0),
       stroke: (width) => pathBuilder(false, finitePositive(width, "stroke width")),
@@ -7327,6 +7330,7 @@ impl ShellRuntime {
             )?;
             text_constructor(&globals, "__svg", runtime.clone(), Component::Svg)?;
             text_constructor(&globals, "__image", runtime.clone(), Component::Image)?;
+            text_constructor(&globals, "__reel", runtime.clone(), Component::Reel)?;
             text_constructor(
                 &globals,
                 "__accordion",
