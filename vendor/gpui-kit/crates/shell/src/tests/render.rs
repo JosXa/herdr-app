@@ -5792,6 +5792,43 @@ export default class Code extends View {
     });
 }
 
+// HERDR: a chat-style textarea sends on Enter and breaks the line on Shift+Enter.
+#[gpui::test]
+fn a_textarea_can_submit_on_enter(cx: &mut TestAppContext) {
+    cx.update(|cx| crate::init(cx));
+    let runtime = ShellRuntime::new_isolated().expect("runtime");
+    cx.update(|cx| runtime.set_global(cx));
+    let source = r#"
+import { View } from "gpui-kit";
+import { Textarea, TextareaState } from "gpui-base";
+export default class Note extends View {
+  init() {
+    this.body = TextareaState.new({ rows: 3 });
+    this.body.set_submit_on_enter(true);
+    this.body.on("submit", (event) => { if (!event.shift) this.body.set_value(""); });
+  }
+  render(cx) { return Textarea.new(this.body); }
+}
+"#;
+    let view_type = runtime.load_source("chat-note", source).expect("load");
+    let runtime_for_view = runtime.clone();
+    let (_root, context) = cx.add_window_view(move |window, cx| {
+        let object = runtime_for_view
+            .instantiate(&view_type, window, cx)
+            .expect("instantiate");
+        let view = cx.new(|_| ScriptView::new(runtime_for_view, object));
+        crate::root::ShellRoot::new(view.into(), window, cx)
+    });
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let body = runtime.entities().first_textarea().expect("textarea");
+    context.update(|window, cx| body.update(cx, |state, cx| state.focus(window, cx)));
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    context.simulate_keystrokes("a shift-enter b");
+    context.update(|_, cx| assert_eq!(body.read(cx).value().as_ref(), "a\nb"));
+    context.simulate_keystrokes("enter");
+    context.update(|_, cx| assert_eq!(body.read(cx).value().as_ref(), ""));
+}
+
 #[gpui::test]
 fn an_unknown_input_event_names_the_valid_ones(cx: &mut TestAppContext) {
     cx.update(|cx| crate::init(cx));
