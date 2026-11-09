@@ -64,7 +64,10 @@ use std::{
 use uuid::Uuid;
 
 pub(crate) mod a11y;
+mod driver;
 mod prompts;
+
+pub use driver::{DriverFlags, DriverNode, DriverText};
 
 pub use a11y::A11ySubtreeBuilder;
 
@@ -1007,6 +1010,8 @@ pub(crate) struct Frame {
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub(crate) inspector_hitboxes: FxHashMap<HitboxId, crate::InspectorElementId>,
     pub(crate) tab_stops: TabStopMap,
+    pub(crate) driver_nodes: Vec<DriverNode>,
+    pub(crate) driver_text_inputs: Vec<FocusId>,
 }
 
 #[derive(Clone, Default)]
@@ -1017,6 +1022,7 @@ pub(crate) struct PrepaintStateIndex {
     dispatch_tree_index: usize,
     accessed_element_states_index: usize,
     line_layout_index: LineLayoutIndex,
+    driver_nodes_index: usize,
 }
 
 #[derive(Clone, Default)]
@@ -1030,6 +1036,7 @@ pub(crate) struct PaintIndex {
     accessed_element_states_index: usize,
     tab_handle_index: usize,
     line_layout_index: LineLayoutIndex,
+    driver_text_inputs_index: usize,
 }
 
 impl Frame {
@@ -1066,6 +1073,8 @@ impl Frame {
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector_hitboxes: FxHashMap::default(),
             tab_stops: TabStopMap::default(),
+            driver_nodes: Vec::new(),
+            driver_text_inputs: Vec::new(),
         }
     }
 
@@ -1082,6 +1091,8 @@ impl Frame {
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();
+        self.driver_nodes.clear();
+        self.driver_text_inputs.clear();
         self.focus = None;
 
         #[cfg(any(test, feature = "test-support"))]
@@ -1255,6 +1266,9 @@ pub struct Window {
     #[cfg(feature = "profiler")]
     debug_frame_overlay: crate::debug_overlay::DebugFrameOverlay,
     pub(crate) a11y: A11y,
+    driver_enabled: bool,
+    driver_stack: Vec<usize>,
+    driver_paint_stack: Vec<usize>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2141,6 +2155,9 @@ impl Window {
             client_inset: None,
             image_cache_stack: Vec::new(),
             captured_hitbox: None,
+            driver_enabled: false,
+            driver_stack: Vec::new(),
+            driver_paint_stack: Vec::new(),
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
             #[cfg(feature = "profiler")]
@@ -3881,6 +3898,147 @@ impl Window {
         sorted_indices
     }
 
+    /// Turns recording of each frame's elements and text on or off. See [`DriverNode`].
+    pub fn set_driver_enabled(&mut self, enabled: bool) {
+        if self.driver_enabled != enabled {
+            self.driver_enabled = enabled;
+            self.refresh();
+        }
+    }
+
+    /// Whether each frame's elements and text are being recorded.
+    pub fn driver_enabled(&self) -> bool {
+        self.driver_enabled
+    }
+
+    /// Whether the window has changes that no frame has drawn yet, so the record is stale.
+    pub fn driver_frame_pending(&self) -> bool {
+        self.invalidator.is_dirty()
+    }
+
+    /// The elements drawn in the last frame, parents before children.
+    pub fn driver_nodes(&self) -> &[DriverNode] {
+        &self.rendered_frame.driver_nodes
+    }
+
+    /// Types `text` at the focused text field's selection, as an input method would, without
+    /// key events. Returns false when no text field has focus.
+    pub fn driver_insert_text(&mut self, text: &str, cx: &mut App) -> bool {
+        let Some(mut handler) = self.platform_window.take_input_handler() else {
+            return false;
+        };
+        handler.driver_insert_text(text, self, cx);
+        self.platform_window.set_input_handler(handler);
+        true
+    }
+
+    /// Replaces all the text of the focused text field. Returns false when no text field has
+    /// focus or the field cannot report its text.
+    pub fn driver_replace_text(&mut self, text: &str, cx: &mut App) -> bool {
+        let Some(mut handler) = self.platform_window.take_input_handler() else {
+            return false;
+        };
+        let replaced = handler.driver_replace_all_text(text, self, cx);
+        self.platform_window.set_input_handler(handler);
+        replaced
+    }
+
+    /// The focus handles that registered a text input handler in the last frame.
+    pub fn driver_text_inputs(&self) -> &[FocusId] {
+        &self.rendered_frame.driver_text_inputs
+    }
+
+    pub(crate) fn driver_push_node(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        global_id: Option<&GlobalElementId>,
+        source: Option<&'static std::panic::Location<'static>>,
+        type_name: &'static str,
+        a11y: Option<(accesskit::Role, accesskit::Node)>,
+    ) -> Option<usize> {
+        if !self.driver_enabled {
+            return None;
+        }
+        let index = self.next_frame.driver_nodes.len();
+        self.next_frame.driver_nodes.push(DriverNode {
+            parent: self.driver_stack.last().copied(),
+            bounds,
+            visible_bounds: driver::visible(bounds, self.content_mask()),
+            element_id: global_id
+                .and_then(|id| id.last())
+                .map(|id| id.to_string().into()),
+            type_name,
+            source,
+            role: a11y.as_ref().map(|(role, _)| *role),
+            label: a11y
+                .as_ref()
+                .and_then(|(_, node)| node.label())
+                .map(|label| label.to_string().into()),
+            value: a11y
+                .as_ref()
+                .and_then(|(_, node)| node.value())
+                .map(|value| value.to_string().into()),
+            disabled: a11y.as_ref().is_some_and(|(_, node)| node.is_disabled()),
+            toggled: a11y.as_ref().and_then(|(_, node)| node.toggled()),
+            flags: DriverFlags::default(),
+            key_context: None,
+            focus: None,
+            texts: Vec::new(),
+        });
+        self.driver_stack.push(index);
+        Some(index)
+    }
+
+    pub(crate) fn driver_pop_node(&mut self, pushed: Option<usize>) {
+        if pushed.is_some() {
+            self.driver_stack.pop();
+        }
+    }
+
+    pub(crate) fn driver_push_paint(&mut self, node: Option<usize>) {
+        if let Some(node) = node {
+            self.driver_paint_stack.push(node);
+        }
+    }
+
+    pub(crate) fn driver_pop_paint(&mut self, node: Option<usize>) {
+        if node.is_some() {
+            self.driver_paint_stack.pop();
+        }
+    }
+
+    pub(crate) fn driver_note_interactivity(
+        &mut self,
+        flags: DriverFlags,
+        key_context: Option<SharedString>,
+        focus: Option<FocusId>,
+    ) {
+        if let Some(&index) = self.driver_stack.last() {
+            let node = &mut self.next_frame.driver_nodes[index];
+            node.flags = flags;
+            node.key_context = key_context;
+            node.focus = focus;
+        }
+    }
+
+    pub(crate) fn driver_record_text(&mut self, bounds: Bounds<Pixels>, text: &SharedString) {
+        if !self.driver_enabled {
+            return;
+        }
+        let visible_bounds = driver::visible(bounds, self.content_mask());
+        if let Some(node) = self
+            .driver_paint_stack
+            .last()
+            .and_then(|&index| self.next_frame.driver_nodes.get_mut(index))
+        {
+            node.texts.push(DriverText {
+                bounds,
+                visible_bounds,
+                text: text.clone(),
+            });
+        }
+    }
+
     pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
         PrepaintStateIndex {
             hitboxes_index: self.next_frame.hitboxes.len(),
@@ -3889,10 +4047,20 @@ impl Window {
             dispatch_tree_index: self.next_frame.dispatch_tree.len(),
             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
             line_layout_index: self.text_system.layout_index(),
+            driver_nodes_index: self.next_frame.driver_nodes.len(),
         }
     }
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
+        let reused_nodes = driver::reparent(
+            &self.rendered_frame.driver_nodes
+                [range.start.driver_nodes_index..range.end.driver_nodes_index],
+            range.start.driver_nodes_index,
+            self.next_frame.driver_nodes.len(),
+            self.driver_stack.last().copied(),
+        )
+        .collect::<Vec<_>>();
+        self.next_frame.driver_nodes.extend(reused_nodes);
         self.next_frame.hitboxes.extend(
             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                 .iter()
@@ -3953,11 +4121,16 @@ impl Window {
             cursor_styles_index: self.next_frame.cursor_styles.len(),
             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
             tab_handle_index: self.next_frame.tab_stops.paint_index(),
+            driver_text_inputs_index: self.next_frame.driver_text_inputs.len(),
             line_layout_index: self.text_system.layout_index(),
         }
     }
 
     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
+        self.next_frame.driver_text_inputs.extend_from_slice(
+            &self.rendered_frame.driver_text_inputs
+                [range.start.driver_text_inputs_index..range.end.driver_text_inputs_index],
+        );
         // Cached elements still exist in the frame even when their paint methods don't run.
         #[cfg(any(test, feature = "test-support"))]
         for (selector, bounds) in &self.rendered_frame.debug_bounds_records
@@ -5322,6 +5495,10 @@ impl Window {
         cx: &App,
     ) {
         self.invalidator.debug_assert_paint();
+
+        if self.driver_enabled {
+            self.next_frame.driver_text_inputs.push(focus_handle.id);
+        }
 
         if focus_handle.is_focused(self) {
             let cx = self.to_async(cx);

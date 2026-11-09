@@ -278,6 +278,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
     },
     Prepaint {
         node_id: DispatchNodeId,
+        driver_node: Option<usize>,
         global_id: Option<GlobalElementId>,
         inspector_id: Option<InspectorElementId>,
         bounds: Bounds<Pixels>,
@@ -364,6 +365,22 @@ impl<E: Element> Drawable<E> {
                 }
 
                 let bounds = window.layout_bounds(layout_id);
+                let driver_a11y = if window.driver_enabled() {
+                    self.element.a11y_role().map(|role| {
+                        let mut node = accesskit::Node::new(role);
+                        self.element.write_a11y_info(&mut node);
+                        (role, node)
+                    })
+                } else {
+                    None
+                };
+                let pushed_driver_node = window.driver_push_node(
+                    bounds,
+                    global_id.as_ref(),
+                    self.element.source_location(),
+                    std::any::type_name::<E>(),
+                    driver_a11y,
+                );
                 let mut pushed_a11y_node = false;
                 if window.a11y.is_active() {
                     if let Some(global_id) = global_id.as_ref() {
@@ -412,6 +429,7 @@ impl<E: Element> Drawable<E> {
                     cx,
                 );
                 window.next_frame.dispatch_tree.pop_node();
+                window.driver_pop_node(pushed_driver_node);
 
                 if pushed_a11y_node {
                     if let Some(global_id) = global_id.as_ref() {
@@ -445,6 +463,7 @@ impl<E: Element> Drawable<E> {
 
                 self.phase = ElementDrawPhase::Prepaint {
                     node_id,
+                    driver_node: pushed_driver_node,
                     global_id,
                     inspector_id,
                     bounds,
@@ -464,6 +483,7 @@ impl<E: Element> Drawable<E> {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::Prepaint {
                 node_id,
+                driver_node,
                 global_id,
                 inspector_id,
                 bounds,
@@ -477,6 +497,7 @@ impl<E: Element> Drawable<E> {
                 }
 
                 window.next_frame.dispatch_tree.set_active_node(node_id);
+                window.driver_push_paint(driver_node);
                 self.element.paint(
                     global_id.as_ref(),
                     inspector_id.as_ref(),
@@ -486,6 +507,7 @@ impl<E: Element> Drawable<E> {
                     window,
                     cx,
                 );
+                window.driver_pop_paint(driver_node);
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();

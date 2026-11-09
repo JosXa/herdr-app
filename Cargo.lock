@@ -3711,6 +3711,7 @@ dependencies = [
  "gpui-pre-wgpu",
  "gpui-pre-windows",
  "gpui-shell",
+ "herdr-ctrl-app",
  "image",
  "libc",
  "notify",
@@ -3729,6 +3730,29 @@ dependencies = [
  "uds_windows",
  "windows-sys 0.61.2",
  "winresource",
+]
+
+[[package]]
+name = "herdr-ctrl-app"
+version = "0.1.0"
+source = "git+https://github.com/JosXa/herdr-ctrl#f49af835ed4f12c4b07de34a85200e67210a852c"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "gpui-pre",
+ "herdr-ctrl-protocol",
+ "image",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "herdr-ctrl-protocol"
+version = "0.1.0"
+source = "git+https://github.com/JosXa/herdr-ctrl#f49af835ed4f12c4b07de34a85200e67210a852c"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

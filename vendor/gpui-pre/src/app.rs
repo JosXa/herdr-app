@@ -48,7 +48,7 @@ use crate::{
     AnyWindowHandle, AppContext, Arena, ArenaBox, Asset, AssetSource, BackgroundExecutor, Bounds,
     ClipboardItem, ClipboardReadError, CursorStyle, DispatchPhase, DisplayId, EventEmitter,
     ExternalDragPayload, FocusHandle, FocusMap, ForegroundExecutor, Global, KeyBinding, KeyContext,
-    Keymap, Keystroke, LayoutId, Menu, MenuItem, MissingGlyph, OwnedMenu, PathPromptOptions,
+    Keymap, Keystroke, LayoutId, Menu, MenuItem, MissingGlyph, OwnedMenu, PathPrompt, PathPromptOptions,
     Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point,
     Priority, PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render, RenderImage,
     RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString, SubscriberSet,
@@ -822,6 +822,7 @@ pub struct App {
     pub(crate) layout_id_buffer: Vec<LayoutId>, // We recycle this memory across layout requests.
     pub(crate) propagate_event: bool,
     pub(crate) prompt_builder: Option<PromptBuilder>,
+    path_prompt_hook: Option<Rc<dyn Fn(PathPrompt) -> Option<Option<Vec<PathBuf>>>>>,
     pub(crate) window_invalidators_by_entity:
         FxHashMap<EntityId, FxHashMap<WindowId, WindowInvalidator>>,
     pub(crate) tracked_entities: FxHashMap<WindowId, FxHashSet<EntityId>>,
@@ -937,6 +938,7 @@ impl App {
                 layout_id_buffer: Default::default(),
                 propagate_event: true,
                 prompt_builder: Some(PromptBuilder::Default),
+                path_prompt_hook: None,
                 #[cfg(any(feature = "inspector", debug_assertions))]
                 inspector_renderer: None,
                 #[cfg(any(feature = "inspector", debug_assertions))]
@@ -1772,6 +1774,15 @@ impl App {
         &self,
         options: PathPromptOptions,
     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        let answer = self
+            .path_prompt_hook
+            .as_ref()
+            .and_then(|hook| hook(PathPrompt::Open(options.clone())));
+        if let Some(answer) = answer {
+            let (sender, receiver) = oneshot::channel();
+            sender.send(Ok(answer)).ok();
+            return receiver;
+        }
         self.platform.prompt_for_paths(options)
     }
 
@@ -1786,7 +1797,30 @@ impl App {
         directory: &Path,
         suggested_name: Option<&str>,
     ) -> oneshot::Receiver<Result<Option<PathBuf>>> {
+        let answer = self.path_prompt_hook.as_ref().and_then(|hook| {
+            hook(PathPrompt::Save {
+                directory: directory.to_path_buf(),
+                suggested_name: suggested_name.map(ToString::to_string),
+            })
+        });
+        if let Some(answer) = answer {
+            let (sender, receiver) = oneshot::channel();
+            sender
+                .send(Ok(answer.and_then(|paths| paths.into_iter().next())))
+                .ok();
+            return receiver;
+        }
         self.platform.prompt_for_new_path(directory, suggested_name)
+    }
+
+    /// Answers [`Self::prompt_for_paths`] and [`Self::prompt_for_new_path`] with `hook` in place
+    /// of the platform's file panels, for tools that drive the app. `None` lets the platform
+    /// panel open; `Some(None)` cancels the prompt.
+    pub fn set_path_prompt_hook(
+        &mut self,
+        hook: impl Fn(PathPrompt) -> Option<Option<Vec<PathBuf>>> + 'static,
+    ) {
+        self.path_prompt_hook = Some(Rc::new(hook));
     }
 
     /// Reveals the specified path at the platform level, such as in Finder on macOS.
