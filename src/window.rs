@@ -6150,7 +6150,7 @@ export default class Probe extends View {
     }
 
     #[test]
-    fn shift_right_drag_moves_only_the_pressed_corner_of_a_pane_window() {
+    fn quarter_drag_moves_only_the_pressed_corner_of_a_pane_window() {
         in_own_process("pane_window_quarter_resize");
     }
 
@@ -6198,38 +6198,47 @@ export default class Probe extends View {
         // moves fast, so a new move arrives with every frame: the person sees the
         // first frame drawn after each move, before anything else catches up. In
         // every such frame the corner opposite the one pressed stays where it was.
-        let shift_right_drag = |cx: &mut VisualTestContext, from: Point<Pixels>, by: Point<Pixels>, fixed: fn(&Bounds<Pixels>) -> Point<Pixels>, corner: &str| {
+        // Shift + Option + left drag does the same for touchpads, where a right
+        // drag is awkward.
+        let quarter_drag = |cx: &mut VisualTestContext, button: MouseButton, modifiers: Modifiers, from: Point<Pixels>, by: Point<Pixels>, fixed: fn(&Bounds<Pixels>) -> Point<Pixels>, corner: &str| {
             let anchor = fixed(&drawn(cx));
-            cx.simulate_mouse_move(from, None, Modifiers::shift());
-            cx.simulate_mouse_down(from, MouseButton::Right, Modifiers::shift());
+            cx.simulate_mouse_move(from, None, modifiers);
+            cx.simulate_mouse_down(from, button, modifiers);
             for step in 1..=3 {
                 let position = from + by * (step as f32 / 3.);
-                cx.update(|window, cx| window.dispatch_event(MouseMoveEvent { position, pressed_button: Some(MouseButton::Right), modifiers: Modifiers::shift() }.to_platform_input(), cx));
+                cx.update(|window, cx| window.dispatch_event(MouseMoveEvent { position, pressed_button: Some(button), modifiers }.to_platform_input(), cx));
                 assert_eq!(fixed(&shown(cx)), anchor, "the {corner} corner stays where it was in the first frame after move {step}");
             }
             cx.run_until_parked();
-            cx.simulate_mouse_up(from + by, MouseButton::Right, Modifiers::shift());
+            cx.simulate_mouse_up(from + by, button, modifiers);
             cx.run_until_parked();
             assert_eq!(fixed(&drawn(cx)), anchor, "the {corner} corner stays where it was after letting go");
         };
         // Freshly opened, pressed near the top right and dragged up and right:
         // the top right corner follows the pointer, the bottom left corner stays.
         let before = drawn(cx);
-        shift_right_drag(cx, point(before.right() - px(30.), before.top() + px(20.)), point(px(90.), px(-120.)), |b| b.bottom_left(), "bottom left");
+        quarter_drag(cx, MouseButton::Right, Modifiers::shift(), point(before.right() - px(30.), before.top() + px(20.)), point(px(90.), px(-120.)), |b| b.bottom_left(), "bottom left");
         let after = drawn(cx);
         assert_eq!(after.top_right(), before.top_right() + point(px(90.), px(-120.)), "the top right corner follows the pointer");
         // Pressed near the bottom right and dragged down and right: the bottom
         // right corner follows the pointer, the top left corner stays.
         let before = after;
-        shift_right_drag(cx, before.bottom_right() - point(px(30.), px(20.)), point(px(60.), px(90.)), |b| b.origin, "top left");
+        quarter_drag(cx, MouseButton::Right, Modifiers::shift(), before.bottom_right() - point(px(30.), px(20.)), point(px(60.), px(90.)), |b| b.origin, "top left");
         let after = drawn(cx);
         assert_eq!(after.bottom_right(), before.bottom_right() + point(px(60.), px(90.)), "the bottom right corner follows the pointer");
         // Pressed near the top left and dragged down: the top edge follows the
         // pointer down, the bottom right corner stays.
         let before = after;
-        shift_right_drag(cx, before.origin + point(px(30.), px(20.)), point(px(0.), px(60.)), |b| b.bottom_right(), "bottom right");
+        quarter_drag(cx, MouseButton::Right, Modifiers::shift(), before.origin + point(px(30.), px(20.)), point(px(0.), px(60.)), |b| b.bottom_right(), "bottom right");
         let after = drawn(cx);
         assert_eq!(after.origin, before.origin + point(px(0.), px(60.)), "the top left corner follows the pointer");
+        // Shift + Option, pressed near the bottom left and dragged left: the
+        // bottom left corner follows the pointer, the top right corner stays.
+        let before = after;
+        let shift_option = Modifiers { shift: true, alt: true, ..Default::default() };
+        quarter_drag(cx, MouseButton::Left, shift_option, before.bottom_left() + point(px(30.), px(-20.)), point(px(-70.), px(0.)), |b| b.top_right(), "top right");
+        let after = drawn(cx);
+        assert_eq!(after.bottom_left(), before.bottom_left() + point(px(-70.), px(0.)), "the bottom left corner follows the pointer");
     }
 
     #[test]

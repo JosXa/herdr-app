@@ -4,7 +4,7 @@
 //! window remembers its spot, and opening that key again replaces it; with
 //! `keep` it also reopens on the next start, in the layout that opened it.
 //! A layout switch closes them (they belong to their layout, like its mods).
-//! With `resizable` its edges and corners resize it, and so does Shift + right drag anywhere on it
+//! With `resizable` its edges and corners resize it, and so does Shift + right drag or Shift + Option drag anywhere on it
 //! (the corner of the quarter pressed follows the pointer, the opposite one stays: Hyprland's
 //! floating resize); a key remembers the size too;
 //! one without a height follows its content's height until a top or bottom drag sets one
@@ -91,6 +91,11 @@ fn resize_cursor(sx: i8, sy: i8) -> CursorStyle {
 
 /// Where a window of that size lands wholly inside the area (its top left
 /// when it's bigger).
+/// Shift + right press, or Shift + Option left press where a right drag is awkward, as on a touchpad.
+pub(super) fn is_quarter_resize(ev: &MouseDownEvent) -> bool {
+    ev.modifiers.shift && (ev.button == MouseButton::Right || (ev.button == MouseButton::Left && ev.modifiers.alt))
+}
+
 fn inside(at: Point<Pixels>, s: Size<Pixels>, area: Bounds<Pixels>) -> (Pixels, Pixels) {
     (at.x.min(area.right() - s.width).max(area.left()), at.y.min(area.bottom() - s.height).max(area.top()))
 }
@@ -219,9 +224,9 @@ impl AppWindow {
             // Pressed anywhere, even on the mod's own controls: to the front.
             .capture_any_mouse_down(cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                 this.raise_window(&raise, cx);
-                if resizable && ev.button == MouseButton::Right && ev.modifiers.shift {
+                if resizable && is_quarter_resize(ev) {
                     cx.stop_propagation();
-                    this.resize_by_quarter(&raise, ev.position, cx);
+                    this.resize_by_quarter(&raise, ev.position, ev.button, cx);
                 }
             }))
             .on_mouse_down(
@@ -276,11 +281,11 @@ impl AppWindow {
         cx.notify();
     }
 
-    /// Shift + right press: resizes by the corner of the quarter pressed, as Hyprland does.
-    fn resize_by_quarter(&mut self, id: &str, at: Point<Pixels>, cx: &mut Context<Self>) {
+    /// Shift + right press, or Shift + Option left press for touchpads: resizes by the corner of the quarter pressed, as Hyprland does.
+    fn resize_by_quarter(&mut self, id: &str, at: Point<Pixels>, button: MouseButton, cx: &mut Context<Self>) {
         let Some(b) = self.bounds.borrow().get(&format!("overlay:{id}")).copied() else { return };
         let (sx, sy) = (if at.x < b.center().x { -1 } else { 1 }, if at.y < b.center().y { -1 } else { 1 });
-        self.resize_press(id, sx, sy, MouseButton::Right, at, cx);
+        self.resize_press(id, sx, sy, button, at, cx);
     }
 
     fn resize_move(&mut self, at: Point<Pixels>, pressed: bool, cx: &mut Context<Self>) {
