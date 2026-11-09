@@ -1,5 +1,7 @@
 name: patched macOS artifact
 on:
+  push:
+    branches: [patched-macos]
   workflow_dispatch:
 permissions:
   contents: read
