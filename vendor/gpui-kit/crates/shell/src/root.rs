@@ -588,10 +588,18 @@ impl ShellRoot {
     }
 
     fn on_action_tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
+        if focus_outside_tab_order(window, cx) {
+            cx.propagate();
+            return;
+        }
         cycle_focus(true, window, cx);
     }
 
     fn on_action_tab_prev(&mut self, _: &TabPrev, window: &mut Window, cx: &mut Context<Self>) {
+        if focus_outside_tab_order(window, cx) {
+            cx.propagate();
+            return;
+        }
         cycle_focus(false, window, cx);
     }
 
@@ -1173,6 +1181,12 @@ fn restore_focus(handle: Option<WeakFocusHandle>, window: &mut Window, cx: &mut 
 /// that happens, keep stepping until focus is back inside the trap — that is
 /// the wrap-around — and give up if a full cycle finds nothing, so a trap with
 /// no focusable child cannot spin.
+// HERDR: Tab reaches the key listeners of a focused element that is no tab stop,
+// such as a mod's own focus handle, instead of cycling away from it.
+fn focus_outside_tab_order(window: &Window, cx: &App) -> bool {
+    window.focused(cx).is_some_and(|focused| !focused.tab_stop)
+}
+
 fn cycle_focus(forward: bool, window: &mut Window, cx: &mut App) {
     let step = |window: &mut Window, cx: &mut App| {
         if forward {

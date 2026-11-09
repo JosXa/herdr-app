@@ -8662,6 +8662,85 @@ export default class Form extends View {
     );
 }
 
+// HERDR: a mod's own focus handle hears Tab.
+/// Tab cycles the tab order only from a tab stop; a focused element outside it
+/// keeps the focus and hears the key, as the media viewer does to switch albums.
+#[gpui::test]
+fn tab_reaches_a_focused_element_outside_the_tab_order(cx: &mut TestAppContext) {
+    cx.update(|cx| crate::init(cx));
+
+    let runtime = ShellRuntime::new_isolated().expect("runtime");
+    cx.update(|cx| runtime.set_global(cx));
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { v_flex } from "gpui-base";
+
+export default class Viewer extends View {
+  init(_props, cx) {
+    this.handle = cx.focus_handle();
+    this.field = cx.focus_handle();
+    this.pressed = [];
+  }
+
+  render(_cx) {
+    return v_flex()
+      .w(200)
+      .h(120)
+      .child(div().id("field").w(200).h(40).tab_index(1).track_focus(this.field))
+      .child(
+        div()
+          .id("viewer")
+          .w(200)
+          .h(60)
+          .track_focus(this.handle)
+          .on_key_down((event, cx) => {
+            this.pressed.push(event.keystroke);
+            cx.notify();
+          }),
+      )
+      .child(div().child(`down=${this.pressed.join(" ")}`));
+  }
+}
+"#;
+    let view_type = runtime.load_source("viewer-tab", source).expect("load");
+    let runtime_for_view = Rc::clone(&runtime);
+    let script = Rc::new(std::cell::RefCell::new(None));
+    let script_for_root = Rc::clone(&script);
+    let (_root, context) = cx.add_window_view(move |window, cx| {
+        let object = runtime_for_view
+            .instantiate(&view_type, window, cx)
+            .expect("instantiate");
+        let view = cx.new(|_| ScriptView::new(runtime_for_view, object));
+        *script_for_root.borrow_mut() = Some(view.clone());
+        crate::root::ShellRoot::new(view.into(), window, cx)
+    });
+    context.update(|window, cx| window.draw(cx).clear(cx));
+
+    let handles = runtime.entities().focus_handles();
+    assert_eq!(handles.len(), 2, "the script created two focus handles");
+    let viewer = handles[0].clone();
+    context.update(|window, cx| viewer.focus(window, cx));
+    context.update(|window, cx| window.draw(cx).clear(cx));
+
+    context.simulate_keystrokes("tab shift-tab");
+    context.run_until_parked();
+    context.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert_eq!(
+        context.update(|window, cx| window.focused(cx)),
+        Some(viewer),
+        "Tab must leave the focus on an element outside the tab order"
+    );
+    let view = script.borrow().clone().expect("script view");
+    let tree = context.update(|_, cx| {
+        view.read(cx)
+            .snapshot()
+            .map(crate::RenderSnapshot::debug_tree)
+            .unwrap_or_default()
+    });
+    assert!(tree.contains("down=tab shift-tab"), "the element must hear Tab and Shift-Tab: {tree}");
+}
+
 /// `is_focused()` answers about the element the handle was given to.
 ///
 /// The round trip is the whole point of a script-owned handle: the script asks
