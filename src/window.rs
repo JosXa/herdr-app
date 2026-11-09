@@ -4553,7 +4553,7 @@ impl AppWindow {
                     );
                 }
                 OverlayKind::Toast => {
-                    out.push(div().absolute().right(settings::z(16.0)).bottom(settings::z(toast_y)).child(body).into_any_element());
+                    out.push(deferred(div().absolute().right(settings::z(16.0)).bottom(settings::z(toast_y)).child(body)).with_priority(TOAST_PRIORITY).into_any_element());
                     toast_y += o.size.height + 8.0;
                 }
             }
@@ -4572,6 +4572,10 @@ impl AppWindow {
 }
 
 const UPDATE_PILL_HEIGHT: f32 = 34.0;
+
+/// Toasts paint above the deferred layer of mod popups (gpui-kit's `POPUP_PRIORITY`
+/// is 100), so a popup hanging off a pane window never covers a notification.
+const TOAST_PRIORITY: usize = 200;
 
 impl AppWindow {
     /// "Herdr 0.2.0 is ready · Restart": the frame's, so no layout or mod can hide it.
