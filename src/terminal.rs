@@ -34,6 +34,13 @@ pub fn hsla(c: Rgb) -> Hsla {
     Rgba { r: c.0 as f32 / 255.0, g: c.1 as f32 / 255.0, b: c.2 as f32 / 255.0, a: 1.0 }.into()
 }
 
+fn cell_bg_opacity(bg: Rgb, opacities: &std::collections::BTreeMap<String, f32>) -> f32 {
+    if opacities.is_empty() {
+        return 1.0;
+    }
+    opacities.get(&format!("#{:02x}{:02x}{:02x}", bg.0, bg.1, bg.2)).copied().unwrap_or(1.0)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum LinkTarget {
     External(links::Target),
@@ -1467,7 +1474,8 @@ enum RowOp {
 /// text in runs of one style (wide characters, sprites and icons on their own).
 fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, cursor: Option<usize>, window: &mut Window) -> Vec<RowOp> {
     crate::bench::count(&crate::bench::ROWS);
-    let ligatures = crate::settings::get().font_ligatures;
+    let settings = crate::settings::get();
+    let ligatures = settings.font_ligatures;
     let mut ops = Vec::new();
     let mut x = 0;
     while x < row.len() {
@@ -1479,7 +1487,7 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, cursor: Option<usize>, window: 
         while x < row.len() && row[x].bg == Some(bg) {
             x += 1;
         }
-        ops.push(RowOp::Bg { from: start, to: x, color: hsla(bg) });
+        ops.push(RowOp::Bg { from: start, to: x, color: hsla(bg).opacity(cell_bg_opacity(bg, &settings.cell_opacity)) });
     }
     let mut x = 0;
     while x < row.len() {

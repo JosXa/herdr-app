@@ -510,6 +510,7 @@ pub struct Settings {
     pub terminal_padding: [f32; 2],
     /// 0..1: below 1, what's behind a terminal shows through.
     pub terminal_opacity: f32,
+    pub cell_opacity: BTreeMap<String, f32>,
     pub clipboard_write: bool,
     pub minimum_contrast: f32,
     pub option_as_alt: OptionAsAlt,
@@ -555,6 +556,7 @@ impl Default for Settings {
             terminal_context_menu: true,
             terminal_padding: [10.0, 6.0],
             terminal_opacity: 1.0,
+            cell_opacity: BTreeMap::new(),
             clipboard_write: true,
             minimum_contrast: 1.0,
             option_as_alt: OptionAsAlt::Auto,
@@ -595,6 +597,12 @@ impl Settings {
             terminal_context_menu: person.terminal_context_menu,
             terminal_padding: look.terminal_padding.unwrap_or(d.terminal_padding),
             terminal_opacity: look.terminal_opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+            cell_opacity: look
+                .cell_opacity
+                .iter()
+                .flatten()
+                .map(|(color, opacity)| (color.trim().to_ascii_lowercase(), opacity.clamp(0.0, 1.0)))
+                .collect(),
             sounds: person.sounds.clone(),
             clipboard_write: person.clipboard_write,
             minimum_contrast: person.minimum_contrast,

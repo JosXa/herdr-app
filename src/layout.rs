@@ -171,6 +171,9 @@ pub struct Look {
     /// 0..1: below 1, what's behind a terminal shows through its background.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_opacity: Option<f32>,
+    /// Explicit cell background `#rrggbb` → the opacity (0..1) it paints at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_opacity: Option<std::collections::BTreeMap<String, f32>>,
 }
 
 /// A layout's theme: one name, or a pair the system's appearance (or the
