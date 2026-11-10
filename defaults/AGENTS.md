@@ -641,7 +641,8 @@ The main ones:
   `app.check_updates` (only a successful check reports Up to date; a failed check clears the checked time and can be retried), `app.update_core` (a newer herdr-core of this generation, terminals kept;
   never one a package manager owns), `app.welcome`, `app.whats_new`, `app.feedback {message?, from?}` (from `"person"` or `"agent"`; opens a review window, where the person can paste up to 3 screenshots; never sends until the person clicks Send), `app.reset`,
   `app.theme {name}`, `app.zoom_in`, `app.zoom_out`, `app.zoom_reset`,
-  `app.update` (restart into a downloaded update).
+  `app.update` (restart into a downloaded update),
+  `app.restart` (restart the window with the same environment, picking up a rebuilt binary; terminals keep running).
   Add machine lists all named ssh-config hosts in a scrollable list. Setup
   prompts open above the picker; close the setup terminal to return to the
   updated list and any machine-specific guidance. If a remote machine was rebuilt

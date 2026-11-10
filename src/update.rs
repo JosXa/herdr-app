@@ -527,6 +527,40 @@ fn relaunch_expected(expected: Option<&str>) -> bool {
     }
 }
 
+pub fn restart() -> bool {
+    match root().map(|root| exe_in(&root)).or_else(|| std::env::current_exe().ok()) {
+        Some(program) => reopen(&program),
+        None => false,
+    }
+}
+
+#[cfg(windows)]
+fn reopen(program: &Path) -> bool {
+    let exe = program.to_string_lossy().replace('\'', "''");
+    let script = format!("Wait-Process -Id {} -ErrorAction SilentlyContinue; Start-Process '{exe}'", std::process::id());
+    let spawned = crate::spawn::command("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    spawned.map_err(|e| tracing::warn!("restart: cannot reopen the app: {e}")).is_ok()
+}
+
+#[cfg(unix)]
+fn reopen(program: &Path) -> bool {
+    use std::os::unix::process::CommandExt;
+    let spawned = Command::new("sh")
+        .arg("-c")
+        .arg("while kill -0 \"$0\" 2>/dev/null; do sleep 0.1; done; exec \"$1\"")
+        .arg(std::process::id().to_string())
+        .arg(program)
+        .stdin(Stdio::null())
+        .process_group(0)
+        .spawn();
+    spawned.map_err(|e| tracing::warn!("restart: cannot reopen the app: {e}")).is_ok()
+}
+
 /// Opens the app again once this process has exited (after `apply`).
 #[cfg(unix)]
 fn relaunch_expected(expected: Option<&str>) -> bool {
