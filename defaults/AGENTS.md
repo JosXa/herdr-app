@@ -255,13 +255,15 @@ Properties any node can have:
   a valid target cancels. One-pane and zoomed tabs can move to another space. The grip appears
   on top-edge hover, regardless of the header's position or presence. Shipped pane headers
   also start drags. Mods can call `beginDrag("tab" | "pane", id, event)`
-  from left `on_mouse_down` and `dragTarget("space" | "tab" | "pane", id, event)`
+  from left `on_mouse_down` and `dragTarget("space" | "tab" | "pane" | "mod", id, event)`
   from `on_mouse_move` on destination rows. The app owns the drag until release or Escape;
   it requires a four-pixel move before dropping and uses the destination event's bounds.
   A tab dropped on a space moves intact. A pane becomes a new tab there. Drops on tabs
   put a tab before or after that tab, by the hovered half, which an insertion bar marks;
   a pane drop adds the pane beside the tab's focused pane. Moves stay on the
-  same machine, including between remote spaces. `panes()` exposes `movable`.
+  same machine, including between remote spaces. A `mod` target moves nothing; the drop
+  sends the reporting mod's `nextCommand()` `drop {"target": id, "tab" | "pane": dragged}`,
+  on any machine. `panes()` exposes `movable`.
   Mouse Back and Forward traverse actual keyboard visits across tabs and spaces from terminals or the sidebar. History survives app restarts in the saved view. Closed panes are skipped; visiting another pane clears Forward. `pane.back` and `pane.forward` take the same Back and Forward steps; `other_space: true` skips the panes of the shown space.
   Tilting the mouse wheel right or left runs `pane.next` or `pane.prev`; holding the tilt repeats it. Shift+wheel still scrolls sideways. Over a window overlay the tilt goes to that window's mod instead, as a `ScrollWheelEvent` with `delta_lines.x` and no `y`.
 - `floating`: blocks over this node (below).

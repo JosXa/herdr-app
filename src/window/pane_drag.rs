@@ -13,12 +13,14 @@ pub(super) struct PaneDrag {
     mod_target: Option<ModTarget>,
 }
 
-/// A space, tab or pane a mod reported under the pointer; `vertical` targets sit in a top-to-bottom list.
+/// A space, tab, pane or `mod` target a mod reported under the pointer; `vertical` targets sit in a top-to-bottom list.
+/// `owner` is the reporting mod, which a `mod` drop reaches through its `nextCommand()`.
 struct ModTarget {
     kind: String,
     id: String,
     bounds: Bounds<Pixels>,
     vertical: bool,
+    owner: String,
 }
 
 /// What dropping on a mod target runs. `after` picks the target side its line marks;
@@ -84,6 +86,12 @@ fn drop_line(b: Bounds<Pixels>, after: bool, vertical: bool) -> AnyElement {
     }
 }
 
+/// The command a `mod` drop sends its owner: `drop` and JSON naming the target and the dragged tab or pane.
+fn mod_drop_command(d: &PaneDrag, target: &str) -> String {
+    let source = if d.whole_tab { "tab" } else { "pane" };
+    format!("drop {}", json!({"target": target, source: d.pane}))
+}
+
 fn drop_box(b: Bounds<Pixels>) -> AnyElement {
     div().absolute().left(b.origin.x).top(b.origin.y).w(b.size.width).h(b.size.height)
         .bg(c("accent").opacity(0.18)).border_2().border_color(c("accent")).into_any_element()
@@ -114,14 +122,14 @@ impl AppWindow {
         }
     }
 
-    pub(super) fn mod_drag_target(&mut self, kind: &str, id: &str, event: &Value, vertical: bool, cx: &mut Context<Self>) {
+    pub(super) fn mod_drag_target(&mut self, kind: &str, id: &str, event: &Value, vertical: bool, owner: &str, cx: &mut Context<Self>) {
         let Some(drag) = self.pane_drag.as_ref() else { return };
         let source = self.model.space_of(&drag.pane);
         let target = if kind == "space" { self.model.space(id) } else if matches!(kind, "tab" | "pane") { self.model.space_of(id) } else { None };
-        if source.zip(target).is_none_or(|(a, b)| a.machine != b.machine) { return; }
+        if kind != "mod" && source.zip(target).is_none_or(|(a, b)| a.machine != b.machine) { return; }
         if kind == "pane" && event_point(event).and_then(|at| self.pane_target(at)).is_some_and(|(pane, _)| pane == id) { return; }
         let Some(bounds) = event_bounds(event) else { return };
-        self.pane_drag.as_mut().unwrap().mod_target = Some(ModTarget { kind: kind.into(), id: id.into(), bounds, vertical });
+        self.pane_drag.as_mut().unwrap().mod_target = Some(ModTarget { kind: kind.into(), id: id.into(), bounds, vertical, owner: owner.into() });
         cx.notify();
     }
 
@@ -228,7 +236,9 @@ impl AppWindow {
             return false;
         }
         if let Some(target) = d.mod_target.as_ref().filter(|t| t.bounds.contains(&at)) {
-            if let Some(drop) = self.mod_drop(&d, target, at) {
+            if target.kind == "mod" {
+                crate::mods::send_command(&target.owner, &mod_drop_command(&d, &target.id));
+            } else if let Some(drop) = self.mod_drop(&d, target, at) {
                 self.run(drop.command, drop.args, window, cx);
                 if drop.first && let Some(tab) = self.model.tab_of(&d.pane).map(|t| t.id.clone()) {
                     self.run("tab.move", json!({"id":tab,"index":1}), window, cx);
@@ -250,7 +260,7 @@ impl AppWindow {
     }
 
     fn mod_drop(&self, d: &PaneDrag, target: &ModTarget, at: Point<Pixels>) -> Option<ModDrop> {
-        let ModTarget { kind, id, bounds, vertical } = target;
+        let ModTarget { kind, id, bounds, vertical, .. } = target;
         let after = drops_after(*bounds, at, *vertical);
         let drop = |command, args, after| Some(ModDrop { command, args, after, first: false });
         match (d.whole_tab, kind.as_str()) {
@@ -279,6 +289,7 @@ impl AppWindow {
     pub(super) fn pane_drag_layer(&self, cx: &mut Context<Self>) -> AnyElement {
         let mod_preview = self.pane_drag.as_ref().filter(|d| d.moving).and_then(|d| {
             let target = d.mod_target.as_ref()?;
+            if target.kind == "mod" { return Some(drop_box(target.bounds)); }
             let drop = self.mod_drop(d, target, d.at)?;
             let line = target.vertical || (d.whole_tab && target.kind == "tab");
             Some(if line { drop_line(target.bounds, drop.after, target.vertical) } else { drop_box(target.bounds) })

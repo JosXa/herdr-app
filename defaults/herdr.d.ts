@@ -83,8 +83,10 @@ export function run(name: string, args?: Record<string, unknown>): null;
 export function beginDrag(kind: "tab" | "pane", id: string, event: import("gpui-kit").MouseButtonEvent): null;
 /** Reports the drop target under a native drag. Vertical targets sit in a top-to-bottom list:
  * the hovered half picks the line above or below the row. A tab or pane dropped on a space lands first in it,
- * a pane dropped on a tab joins that tab, and a pane dropped on a pane lands before or after it. */
-export function dragTarget(kind: "space" | "tab" | "pane", id: string, event: import("gpui-kit").MouseMoveEvent, options?: { orientation?: "horizontal" | "vertical" }): null;
+ * a pane dropped on a tab joins that tab, and a pane dropped on a pane lands before or after it.
+ * A "mod" target moves nothing: the drop sends this mod's nextCommand() `drop {"target": id, "tab" | "pane": dragged}`,
+ * on any machine, and the mod decides what happens. */
+export function dragTarget(kind: "space" | "tab" | "pane" | "mod", id: string, event: import("gpui-kit").MouseMoveEvent, options?: { orientation?: "horizontal" | "vertical" }): null;
 
 export type Status = "working" | "blocked" | "done" | "idle";
 

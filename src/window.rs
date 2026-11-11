@@ -3883,7 +3883,7 @@ impl AppWindow {
     fn handle(&mut self, req: Request, window: &mut Window, cx: &mut Context<Self>) {
         match req {
             Request::BeginDrag { kind, id, event } => { self.begin_mod_drag(&kind, &id, &event, cx); }
-            Request::DragTarget { kind, id, event, vertical } => { self.mod_drag_target(&kind, &id, &event, vertical, cx); }
+            Request::DragTarget { kind, id, event, vertical, owner } => { self.mod_drag_target(&kind, &id, &event, vertical, &owner, cx); }
             Request::Run { name, args } => self.run(&name, args, window, cx),
             Request::OpenOverlay { id, spec } => self.open_overlay(id, spec, window, cx),
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),
@@ -5912,6 +5912,55 @@ export default class Probe extends View {
                 assert_eq!(this.live[&terminal]["labels"]["herdr.space"], "");
             }
         }));
+    }
+
+    #[test]
+    fn mod_drops_send_the_owner_the_dragged_tab_or_pane() {
+        in_own_process("mod_drop_bridge");
+    }
+
+    #[gpui::test]
+    fn mod_drop_bridge(cx: &mut gpui::TestAppContext) {
+        use gpui::{MouseButton, point, px};
+        use serde_json::json;
+        if !running_alone("mod_drop_bridge") { return; }
+        let (view, cx) = open_window(cx, "mod-drop-test", r#"
+            import { View, div } from 'gpui-kit';
+            import { beginDrag, dragTarget, nextCommand, run } from 'herdr';
+            export default class Drop extends View {
+                init(_props, cx) {
+                    cx.spawn(async () => { for (;;) run('space.rename', { id: 'source', name: await nextCommand() }); });
+                }
+                render() { return div().size_full().flex().flex_col()
+                    .child(div().h(40).child('tab').on_mouse_down('left', e => beginDrag('tab', 'tab', e)))
+                    .child(div().h(40).child('folder').on_mouse_move(e => dragTarget('mod', 'folder:a', e)))
+                    .child(div().h(40).child('pane').on_mouse_down('left', e => beginDrag('pane', 'pane', e)));
+                }
+            }
+        "#, json!({"id":"main","type":"block","content":{"mod":"mod-drop-test"}}));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model = Default::default();
+            this.model.add_space("source", "source", "", crate::model::Tab::new("tab", "work", "pane", "terminal"));
+            this.documents.entry(String::new()).or_default().available = true;
+            this.sync(window, cx);
+            cx.notify();
+        }));
+        cx.run_until_parked();
+        let origin = view.update(cx, |this, _| this.bounds.borrow()["main"].origin);
+        let at = |y| origin + point(px(20.), px(y));
+        for (from, expected) in [(20., r#"drop {"target":"folder:a","tab":"tab"}"#), (100., r#"drop {"target":"folder:a","pane":"pane"}"#)] {
+            cx.simulate_mouse_down(at(from), MouseButton::Left, Default::default());
+            cx.run_until_parked();
+            cx.simulate_mouse_move(at(60.), Some(MouseButton::Left), Default::default());
+            cx.run_until_parked();
+            cx.simulate_mouse_up(at(60.), MouseButton::Left, Default::default());
+            cx.run_until_parked();
+            view.update(cx, |this, _| {
+                assert_eq!(this.model.space("source").unwrap().name, expected);
+                assert_eq!(this.model.space_of("pane").unwrap().id, "source");
+                assert!(this.pane_drag.is_none());
+            });
+        }
     }
 
     #[test]
