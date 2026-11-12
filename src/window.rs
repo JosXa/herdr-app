@@ -3683,7 +3683,7 @@ impl AppWindow {
             dock = old.2.or(dock);
             self.remove_overlay(&old.0, window, cx);
         }
-        let pinned = spec.get("dock").filter(|d| d.is_object() && pane.is_some());
+        let pinned = spec.get("dock").filter(|d| d.is_object() && kind == OverlayKind::Window);
         if let Some(d) = pinned {
             let flag = |k: &str| d.get(k).and_then(Value::as_bool).unwrap_or(false);
             dock = Some(movable::Dock::corner(flag("right"), flag("bottom")));
@@ -4488,13 +4488,19 @@ impl AppWindow {
         if pill.is_some() {
             toast_y += UPDATE_PILL_HEIGHT + 8.0;
         }
+        // Docked free windows sit in the toasts' corner; toasts stack above them.
+        let corner = Bounds {
+            origin: point(settings::z(16.0), settings::z(16.0)),
+            size: size(viewport.width - settings::z(32.0), viewport.height - settings::z(16.0 + toast_y)),
+        };
+        toast_y += self.tray_lift();
         // Windows under dialogs, popups and toasts; each kind in the order opened
         // (a window pressed last is last: on top).
         let order = self.overlays.iter().filter(|o| o.kind == OverlayKind::Window).chain(self.overlays.iter().filter(|o| o.kind != OverlayKind::Window));
         for o in order {
             let id = o.id.clone();
             // Up to 1: a share of the window (terminals in overlays want room, not px).
-            let pane = self.pane_area(o);
+            let pane = if o.pinned && o.pane.is_none() { Some(corner) } else { self.pane_area(o) };
             if o.pane.is_some() && pane.is_none() {
                 continue;
             }
@@ -4807,7 +4813,7 @@ fn folder_info(cwd: &str, home: &str, on: Option<&str>) -> (model::FolderInfo, b
     }
     let args = ["-C", cwd, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"].map(str::to_owned);
     let ran = match on {
-        Some(m) => mods::run_remote(m, "git", &args, None).ok().map(|(code, out, err)| (code == 0, out, err)),
+        Some(m) => mods::run_remote(m, "git", &args, None, None).ok().map(|(code, out, err)| (code == 0, out, err)),
         None => crate::spawn::command("git").args(&args).output().ok().map(|o| (o.status.success(), o.stdout, o.stderr)),
     };
     let Some((true, out, _)) = ran else {
@@ -6162,6 +6168,52 @@ export default class Probe extends View {
         let (shown, area) = placed(cx);
         assert_eq!(shown.bottom_right(), area.bottom_right(), "a drag leaves it in its corner");
         assert!(super::movable::dock_of("edge-probe").is_none(), "nothing is remembered for it");
+    }
+
+    #[test]
+    fn a_docked_free_window_sits_under_the_toasts() {
+        in_own_process("free_window_dock");
+    }
+
+    #[gpui::test]
+    fn free_window_dock(cx: &mut gpui::TestAppContext) {
+        use gpui::*;
+        use serde_json::json;
+        if !running_alone("free_window_dock") { return; }
+        let (view, cx) = open_window(cx, "tray-probe", r#"
+            import { View, div } from 'gpui-kit';
+            export default class Tray extends View {
+                render() { return div().id('root').size_full(); }
+            }
+        "#, json!({ "id": "main", "type": "block", "content": { "tab": "active" } }));
+        std::fs::write(crate::mods::app_dir().join("mods/tray-probe/mod.json"),
+            r#"{ "place": "none", "overlay": { "kind": "window", "key": "tray-probe", "width": 300, "height": 120, "frame": "none", "dock": { "right": true, "bottom": true } } }"#).unwrap();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model = Default::default();
+            this.model.add_space("space", "space", "", crate::model::Tab::new("tab", "tab", "a", "t-a"));
+            this.documents.entry(String::new()).or_default().available = true;
+            window.activate_window();
+            this.sync(window, cx);
+            this.run("mod.show", json!({ "name": "tray-probe" }), window, cx);
+        }));
+        cx.run_until_parked();
+        cx.run_until_parked();
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let placed = |cx: &mut VisualTestContext| view.update(cx, |this, _| (this.bounds.borrow()["overlay:mod-tray-probe"], this.tray_lift()));
+        let (shown, lift) = placed(cx);
+        let pill = view.update(cx, |this, cx| this.render_update_pill(cx).is_some());
+        let floor = if pill { 16.0 + super::UPDATE_PILL_HEIGHT + 8.0 } else { 16.0 };
+        let corner = point(viewport.width - crate::settings::z(16.0), viewport.height - crate::settings::z(floor));
+        assert_eq!(shown.bottom_right(), corner, "it opens in the toasts' corner, above the update pill");
+        assert_eq!(lift, 128.0, "toasts stack 8px above it");
+        let from = shown.center();
+        cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(from - point(px(200.), px(120.)), Some(MouseButton::Left), Modifiers::none());
+        cx.simulate_mouse_up(from - point(px(200.), px(120.)), MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        let (shown, _) = placed(cx);
+        assert_eq!(shown.bottom_right(), corner, "a drag leaves it in its corner");
+        assert!(super::movable::place_of("tray-probe").is_none(), "nothing is remembered for it");
     }
 
     #[test]

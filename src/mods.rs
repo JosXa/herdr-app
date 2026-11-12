@@ -766,16 +766,22 @@ fn opt_str(v: Option<&HostValue>, key: &str) -> Option<String> {
 const EXEC_LIMIT: Duration = Duration::from_secs(30);
 const EXEC_OUTPUT: u64 = 8 << 20;
 
-fn run_blocking(command: &str, args: &[String], cwd: Option<String>) -> Result<(i32, String, String), String> {
-    use std::io::Read;
+fn run_blocking(command: &str, args: &[String], cwd: Option<String>, stdin: Option<String>) -> Result<(i32, String, String), String> {
+    use std::io::{Read, Write};
     let mut child = crate::spawn::command(command)
         .args(args)
         .current_dir(cwd.map(PathBuf::from).unwrap_or_else(home))
-        .stdin(Stdio::null())
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cannot run {command}: {e}"))?;
+    // Written off this thread and then closed, so a reader that stops early can't block the wait.
+    if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(text.as_bytes());
+        });
+    }
     // Bounded: a chatty command can't fill memory; the rest is drained and dropped.
     let drain = |r: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
@@ -805,16 +811,19 @@ fn run_blocking(command: &str, args: &[String], cwd: Option<String>) -> Result<(
 }
 
 /// Runs a program on another machine through the core's exec: its exact output.
-pub fn run_remote(machine: &str, command: &str, args: &[String], cwd: Option<String>) -> Result<(i32, Vec<u8>, Vec<u8>), String> {
+pub fn run_remote(machine: &str, command: &str, args: &[String], cwd: Option<String>, stdin: Option<String>) -> Result<(i32, Vec<u8>, Vec<u8>), String> {
     use base64::Engine;
     let mut hc_args: Vec<String> = vec!["exec".into(), "--json".into(), "--on".into(), machine.into(), "--timeout".into(), EXEC_LIMIT.as_secs().to_string()];
     if let Some(c) = cwd {
         hc_args.extend(["--cwd".into(), c]);
     }
+    if stdin.is_some() {
+        hc_args.push("--stdin".into());
+    }
     hc_args.push("--".into());
     hc_args.push(command.into());
     hc_args.extend(args.iter().cloned());
-    let (_, out, err) = run_blocking("hc", &hc_args, None)?;
+    let (_, out, err) = run_blocking("hc", &hc_args, None, stdin)?;
     let v: Value = serde_json::from_str(out.trim()).or_else(|_| serde_json::from_str(err.trim())).map_err(|_| format!("hc exec: {}", err.trim()))?;
     if let Some(e) = v.get("error") {
         return Err(e.get("message").and_then(Value::as_str).unwrap_or("hc exec failed").to_owned());
@@ -829,7 +838,7 @@ pub fn run_remote(machine: &str, command: &str, args: &[String], cwd: Option<Str
 
 /// A program's output here, if it ran (for the app's own checks).
 pub fn run_here(command: &str, args: &[String]) -> Option<String> {
-    run_blocking(command, args, None).ok().map(|(_, out, _)| out)
+    run_blocking(command, args, None, None).ok().map(|(_, out, _)| out)
 }
 
 /// The agents a machine can start (`knownAgents()`), asked at most once a minute.
@@ -858,8 +867,8 @@ fn known_agents(on: Option<String>, list: Vec<Value>) -> Value {
 
 /// A text file on another machine: `cat`, or `type` where there is none (Windows).
 fn read_remote(machine: &str, path: &str) -> Result<Option<String>, String> {
-    let (code, out, _) = match run_remote(machine, "cat", &["--".into(), path.into()], None) {
-        Err(e) if e.contains("cannot start") => run_remote(machine, "cmd", &["/d".into(), "/c".into(), "type".into(), path.replace('/', "\\")], None)?,
+    let (code, out, _) = match run_remote(machine, "cat", &["--".into(), path.into()], None, None) {
+        Err(e) if e.contains("cannot start") => run_remote(machine, "cmd", &["/d".into(), "/c".into(), "type".into(), path.replace('/', "\\")], None, None)?,
         r => r?,
     };
     if code != 0 {
@@ -871,12 +880,12 @@ fn read_remote(machine: &str, path: &str) -> Result<Option<String>, String> {
     Ok(Some(String::from_utf8_lossy(&out).into_owned()))
 }
 
-fn exec_future(command: String, args: Vec<String>, cwd: Option<String>, on: Option<String>) -> impl std::future::Future<Output = Result<HostValue, HostError>> + Send {
+fn exec_future(command: String, args: Vec<String>, cwd: Option<String>, on: Option<String>, stdin: Option<String>) -> impl std::future::Future<Output = Result<HostValue, HostError>> + Send {
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let r = match on {
-            Some(m) => run_remote(&m, &command, &args, cwd).map(|(c, o, e)| (c, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned())),
-            None => run_blocking(&command, &args, cwd),
+            Some(m) => run_remote(&m, &command, &args, cwd, stdin).map(|(c, o, e)| (c, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned())),
+            None => run_blocking(&command, &args, cwd, stdin),
         };
         let _ = tx.send_blocking(r);
     });
@@ -913,7 +922,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         })
         .async_function("exec", |a| {
             let command = a.string(0)?.to_owned();
-            Ok(exec_future(command, strings(a.get(1)), opt_str(a.get(2), "cwd"), opt_str(a.get(2), "on")))
+            Ok(exec_future(command, strings(a.get(1)), opt_str(a.get(2), "cwd"), opt_str(a.get(2), "on"), opt_str(a.get(2), "stdin")))
         })
         .async_function("readTextFile", |a| {
             let path = a.string(0)?.to_owned();
@@ -927,7 +936,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             let expected = a.get(2).and_then(|v| match v { HostValue::Str(s) => Some(s.clone()), _ => None });
             Ok(crate::mod_files::write_text(a.string(0)?.to_owned(), a.string(1)?.to_owned(), expected))
         })
-        .async_function("hc", |a| Ok(exec_future("hc".into(), strings(a.get(0)), None, None)))
+        .async_function("hc", |a| Ok(exec_future("hc".into(), strings(a.get(0)), None, None, None)))
         .function("home", |_| Ok(home().to_string_lossy().into_owned().into()))
         .function("appHome", |_| Ok(app_dir().to_string_lossy().into_owned().into()))
         .function("fonts", |_| Ok(to_host(&json!(*FONTS.lock().unwrap()))))

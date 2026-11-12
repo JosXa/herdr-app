@@ -62,6 +62,10 @@ impl Dock {
         Dock { gap: point(px(0.0), px(0.0)), right, bottom }
     }
 
+    fn bottom_right(self) -> bool {
+        self.right && self.bottom
+    }
+
     fn of(window: Bounds<Pixels>, area: Bounds<Pixels>) -> Dock {
         Dock::anchored(window, area, window.center().x > area.center().x, window.center().y > area.center().y)
     }
@@ -204,10 +208,10 @@ impl AppWindow {
             }
         };
         let measure = {
-            let (bounds, slot, known) = (self.bounds.clone(), o.slot.clone(), measured.is_some());
+            let (bounds, slot) = (self.bounds.clone(), o.slot.clone());
             canvas(
                 move |b, window, _| {
-                    if !known {
+                    if measured != Some(b.size) {
                         window.request_animation_frame();
                     }
                     bounds.borrow_mut().insert(slot, b);
@@ -337,6 +341,17 @@ impl AppWindow {
             root.update(cx, |r, cx| r.set_fit_content(false, cx));
         }
         cx.notify();
+    }
+
+    /// How far the toasts rise over the free window docked bottom right, px at zoom 1.
+    pub(super) fn tray_lift(&self) -> f32 {
+        let bounds = self.bounds.borrow();
+        self.overlays
+            .iter()
+            .filter(|o| o.kind == OverlayKind::Window && o.pinned && o.pane.is_none() && o.dock.is_some_and(Dock::bottom_right))
+            .filter_map(|o| bounds.get(&o.slot))
+            .map(|b| f32::from(b.size.height) / settings::zoom() + 8.0)
+            .fold(0.0, f32::max)
     }
 
     /// Where a pane window may be while its pane is shown: the pane below or

@@ -94,9 +94,9 @@ pub fn installed(commands: &[String], on: Option<&str>) -> Vec<String> {
     let out = match on {
         Some(m) => {
             let argv = crate::remote_shell::check(commands);
-            let result = match crate::mods::run_remote(m, &argv[0], &argv[1..], None) {
+            let result = match crate::mods::run_remote(m, &argv[0], &argv[1..], None, None) {
                 Err(e) if e.contains("cannot start sh: program not found") => {
-                    crate::mods::run_remote(m, "powershell.exe", &installed_powershell(commands), None)
+                    crate::mods::run_remote(m, "powershell.exe", &installed_powershell(commands), None, None)
                 }
                 r => r,
             };

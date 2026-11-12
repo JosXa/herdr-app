@@ -9,8 +9,9 @@ export interface ExecResult {
 
 /** Runs a program with the user's real environment (HOME, PATH, auth). 30 s limit, 8 MiB output.
  *  `on`: on that machine (a space's `machine`) through herdr-core, its home by default.
+ *  `stdin`: written to its standard input, which then closes; secrets go here, never in `args`.
  *  Rejects when it can't start (not installed, no such folder, the machine is unreachable). */
-export function exec(command: string, args?: string[], options?: { cwd?: string; on?: string | null }): Promise<ExecResult>;
+export function exec(command: string, args?: string[], options?: { cwd?: string; on?: string | null; stdin?: string }): Promise<ExecResult>;
 
 /** Runs `hc` (herdr-core) with the given arguments. Add "--json" for machine output. */
 export function hc(args: string[]): Promise<ExecResult>;
@@ -382,9 +383,10 @@ export interface OverlaySpec {
   pane?: string;
   /** Like `pane`: the pane showing this terminal. */
   terminal?: string;
-  /** A pane window's corner: it opens flush in that corner of the pane's area and stays there
-   *  (presses don't drag it, nothing is remembered). With width 1 or height 1 it is a strip along
-   *  that edge. */
+  /** A window's corner: it opens flush in that corner of its pane's area (of the app window,
+   *  16px in, for a window without a pane) and stays there (presses don't drag it, nothing is
+   *  remembered). With width 1 or height 1 it is a strip along that edge. A window without a pane
+   *  docked bottom right sits under the toasts, which stack above it. */
   dock?: { right?: boolean; bottom?: boolean };
   /** px, or up to 1: a share of the window (of the pane, for a pane window). */
   width?: number;
