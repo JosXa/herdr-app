@@ -21,6 +21,8 @@ jobs:
         with:
           version: 0.16.0
       - run: scripts/package
+      - run: cargo install --locked --git https://github.com/JosXa/herdr-ctrl --rev 6c916ebe67c1af4d51565f7079d9e10f5aca5071 herdr-ctrl
+      - run: python3 tests/exec_stdin.py target/release/herdr-app
       - run: shasum -a 256 dist/herdr-app-macos-aarch64.tar.gz
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
