@@ -53,6 +53,15 @@ fn tab_drop_index(tabs: &[&str], source: &str, target: &str, after: bool) -> Opt
     (source_at != Some(landing)).then_some(landing + 1)
 }
 
+fn pane_drop_stays(kind: &str, target: &str, pane: &str, tab: &str, alone_in_space: Option<&str>) -> bool {
+    match kind {
+        "pane" => target == pane,
+        "tab" => target == tab,
+        "space" => alone_in_space == Some(target),
+        _ => false,
+    }
+}
+
 fn drops_after(bounds: Bounds<Pixels>, at: Point<Pixels>, vertical: bool) -> bool {
     if vertical { at.y >= bounds.origin.y + bounds.size.height / 2. } else { at.x >= bounds.origin.x + bounds.size.width / 2. }
 }
@@ -127,6 +136,8 @@ impl AppWindow {
         let source = self.model.space_of(&drag.pane);
         let target = if kind == "space" { self.model.space(id) } else if matches!(kind, "tab" | "pane") { self.model.space_of(id) } else { None };
         if kind != "mod" && source.zip(target).is_none_or(|(a, b)| a.machine != b.machine) { return; }
+        let alone_in_space = source.filter(|_| self.model.tab(&drag.tab).is_some_and(|t| t.root.panes().len() == 1)).map(|s| s.id.as_str());
+        if !drag.whole_tab && pane_drop_stays(kind, id, &drag.pane, &drag.tab, alone_in_space) { return; }
         if kind == "pane" && event_point(event).and_then(|at| self.pane_target(at)).is_some_and(|(pane, _)| pane == id) { return; }
         let Some(bounds) = event_bounds(event) else { return };
         self.pane_drag.as_mut().unwrap().mod_target = Some(ModTarget { kind: kind.into(), id: id.into(), bounds, vertical, owner: owner.into() });
@@ -276,7 +287,6 @@ impl AppWindow {
             (true, "space") => drop("tab.move", json!({"id":d.pane,"space":self.model.space(id)?.id}), true),
             (true, _) => None,
             (false, "pane") if *vertical => {
-                if *id == d.pane { return None; }
                 let parent = self.model.tab_of(id)?.root.parent_of(id).and_then(Node::axis);
                 drop("pane.move", json!({"pane":d.pane,"target":id,"edge":edge_name(sibling_edge(parent, after))}), after)
             }
@@ -342,7 +352,7 @@ fn event_bounds(event: &Value) -> Option<Bounds<Pixels>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{STRIP, drop_zone, drops_after, inherited_movable, sibling_edge, tab_drop_index, top_strip};
+    use super::{STRIP, drop_zone, drops_after, inherited_movable, pane_drop_stays, sibling_edge, tab_drop_index, top_strip};
     use crate::layout::{Axis, Content, Edge, Node};
     use gpui::{Bounds, point, px, size};
     #[test]
@@ -364,6 +374,17 @@ mod tests {
             ("x", "b", false, Some(2)), ("x", "d", true, Some(5)),
         ] {
             assert_eq!(tab_drop_index(&tabs, source, target, after), expected, "{source} on {target} after={after}");
+        }
+    }
+    #[test]
+    fn pane_drops_where_the_pane_already_is_stay() {
+        for (kind, target, alone_in_space, expected) in [
+            ("pane", "p1", None, true), ("pane", "p2", None, false),
+            ("tab", "c1", None, true), ("tab", "c2", None, false),
+            ("space", "s1", Some("s1"), true), ("space", "s1", None, false), ("space", "s2", Some("s1"), false),
+            ("mod", "p1", Some("s1"), false),
+        ] {
+            assert_eq!(pane_drop_stays(kind, target, "p1", "c1", alone_in_space), expected, "{kind} {target} alone in {alone_in_space:?}");
         }
     }
     #[test]
