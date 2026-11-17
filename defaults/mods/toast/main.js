@@ -1,6 +1,7 @@
 // How notifications look. Anything can post one with notify({ title, body,
 // level, icon, action }); replace this mod to restyle them all. Click to
-// run its action (e.g. go to the agent) and dismiss it.
+// run its action (e.g. go to the agent) and dismiss it; right-click to
+// dismiss it without running the action.
 
 import { View, div, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -23,6 +24,10 @@ export default class Toast extends View {
       .hover((s) => s.bg(t.hover))
       .on_click(() => {
         if (p.action?.name) run(p.action.name, p.action.args ?? {});
+        closeOverlay(p.overlay);
+      })
+      .on_mouse_down("right", (_e, cx) => {
+        cx.stop_propagation();
         closeOverlay(p.overlay);
       })
       .child(p.icon ? image(p.icon).w(18).h(18).flex_none() : div().size(8).rounded(4).flex_none().bg(t[DOT[p.level] ?? "accent"]))
