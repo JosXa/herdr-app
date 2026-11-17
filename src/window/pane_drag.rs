@@ -23,13 +23,24 @@ struct ModTarget {
     owner: String,
 }
 
-/// What dropping on a mod target runs. `after` picks the target side its line marks;
-/// `first` moves the tab a pane drop creates to the top of its space.
+/// What dropping on a mod target runs. `line` marks the target side with a line, else the
+/// whole target gets a box; `new_tab` places the tab a pane drop creates.
 struct ModDrop {
     command: &'static str,
     args: Value,
-    after: bool,
-    first: bool,
+    line: Option<bool>,
+    new_tab: Option<NewTab>,
+}
+
+enum NewTab {
+    First,
+    Beside { tab: String, after: bool },
+}
+
+/// The top or bottom edge of a list row a pane lands beside as a new tab (Some(after)); None joins the row.
+fn row_edge(bounds: Bounds<Pixels>, at: Point<Pixels>) -> Option<bool> {
+    let y = f32::from(at.y - bounds.origin.y) / f32::from(bounds.size.height);
+    if y < 0.3 { Some(false) } else if y > 0.7 { Some(true) } else { None }
 }
 
 /// The outer quarter of a pane chooses its nearest edge; the middle swaps.
@@ -53,10 +64,10 @@ fn tab_drop_index(tabs: &[&str], source: &str, target: &str, after: bool) -> Opt
     (source_at != Some(landing)).then_some(landing + 1)
 }
 
-fn pane_drop_stays(kind: &str, target: &str, pane: &str, tab: &str, alone_in_space: Option<&str>) -> bool {
+fn pane_drop_stays(kind: &str, target: &str, pane: &str, tab: &str, alone_in_space: Option<&str>, vertical: bool) -> bool {
     match kind {
         "pane" => target == pane,
-        "tab" => target == tab,
+        "tab" => target == tab && (!vertical || alone_in_space.is_some()),
         "space" => alone_in_space == Some(target),
         _ => false,
     }
@@ -137,7 +148,7 @@ impl AppWindow {
         let target = if kind == "space" { self.model.space(id) } else if matches!(kind, "tab" | "pane") { self.model.space_of(id) } else { None };
         if kind != "mod" && source.zip(target).is_none_or(|(a, b)| a.machine != b.machine) { return; }
         let alone_in_space = source.filter(|_| self.model.tab(&drag.tab).is_some_and(|t| t.root.panes().len() == 1)).map(|s| s.id.as_str());
-        if !drag.whole_tab && pane_drop_stays(kind, id, &drag.pane, &drag.tab, alone_in_space) { return; }
+        if !drag.whole_tab && pane_drop_stays(kind, id, &drag.pane, &drag.tab, alone_in_space, vertical) { return; }
         if kind == "pane" && event_point(event).and_then(|at| self.pane_target(at)).is_some_and(|(pane, _)| pane == id) { return; }
         let Some(bounds) = event_bounds(event) else { return };
         self.pane_drag.as_mut().unwrap().mod_target = Some(ModTarget { kind: kind.into(), id: id.into(), bounds, vertical, owner: owner.into() });
@@ -251,8 +262,16 @@ impl AppWindow {
                 crate::mods::send_command(&target.owner, &mod_drop_command(&d, &target.id));
             } else if let Some(drop) = self.mod_drop(&d, target, at) {
                 self.run(drop.command, drop.args, window, cx);
-                if drop.first && let Some(tab) = self.model.tab_of(&d.pane).map(|t| t.id.clone()) {
-                    self.run("tab.move", json!({"id":tab,"index":1}), window, cx);
+                let created = self.model.tab_of(&d.pane).map(|t| t.id.clone());
+                let index = match drop.new_tab {
+                    Some(NewTab::First) => Some(1),
+                    Some(NewTab::Beside { tab, after }) => self.model.space_of(&tab)
+                        .and_then(|s| s.tabs.iter().position(|t| t.id == tab))
+                        .map(|at| at + 1 + usize::from(after)),
+                    None => None,
+                };
+                if let Some((tab, index)) = created.zip(index) {
+                    self.run("tab.move", json!({"id":tab,"index":index}), window, cx);
                 }
             }
         } else if !d.whole_tab && self.pane_movable(&d.pane) && let Some((target, edge)) = target {
@@ -273,26 +292,34 @@ impl AppWindow {
     fn mod_drop(&self, d: &PaneDrag, target: &ModTarget, at: Point<Pixels>) -> Option<ModDrop> {
         let ModTarget { kind, id, bounds, vertical, .. } = target;
         let after = drops_after(*bounds, at, *vertical);
-        let drop = |command, args, after| Some(ModDrop { command, args, after, first: false });
+        let listed = vertical.then_some(after);
+        let drop = |command, args, line| Some(ModDrop { command, args, line, new_tab: None });
         match (d.whole_tab, kind.as_str()) {
             (true, "tab") => {
                 let (space, index) = self.tab_drop(&d.pane, id, after)?;
-                drop("tab.move", json!({"id":d.pane,"space":space,"index":index}), after)
+                drop("tab.move", json!({"id":d.pane,"space":space,"index":index}), Some(after))
             }
             (true, "space") if *vertical => {
                 let space = self.model.space(id)?;
                 if space.tabs.first().is_some_and(|t| t.id == d.pane) { return None; }
-                drop("tab.move", json!({"id":d.pane,"space":id,"index":1}), true)
+                drop("tab.move", json!({"id":d.pane,"space":id,"index":1}), Some(true))
             }
-            (true, "space") => drop("tab.move", json!({"id":d.pane,"space":self.model.space(id)?.id}), true),
+            (true, "space") => drop("tab.move", json!({"id":d.pane,"space":self.model.space(id)?.id}), None),
             (true, _) => None,
             (false, "pane") if *vertical => {
                 let parent = self.model.tab_of(id)?.root.parent_of(id).and_then(Node::axis);
-                drop("pane.move", json!({"pane":d.pane,"target":id,"edge":edge_name(sibling_edge(parent, after))}), after)
+                drop("pane.move", json!({"pane":d.pane,"target":id,"edge":edge_name(sibling_edge(parent, after))}), listed)
             }
-            (false, "pane") => drop("pane.move", json!({"pane":d.pane,"target":id}), true),
-            (false, "space") => Some(ModDrop { command: "pane.move", args: json!({"pane":d.pane,"space":id}), after: true, first: *vertical }),
-            (false, _) => drop("pane.move", json!({"pane":d.pane,kind.as_str():id}), true),
+            (false, "pane") => drop("pane.move", json!({"pane":d.pane,"target":id}), None),
+            (false, "space") => Some(ModDrop { command: "pane.move", args: json!({"pane":d.pane,"space":id}), line: listed.map(|_| true), new_tab: vertical.then_some(NewTab::First) }),
+            (false, "tab") if *vertical && let Some(after) = row_edge(*bounds, at) => Some(ModDrop {
+                command: "pane.move",
+                args: json!({"pane":d.pane,"space":self.model.space_of(id)?.id}),
+                line: Some(after),
+                new_tab: Some(NewTab::Beside { tab: id.clone(), after }),
+            }),
+            (false, "tab") if *id == d.tab => None,
+            (false, _) => drop("pane.move", json!({"pane":d.pane,kind.as_str():id}), None),
         }
     }
 
@@ -301,8 +328,7 @@ impl AppWindow {
             let target = d.mod_target.as_ref()?;
             if target.kind == "mod" { return Some(drop_box(target.bounds)); }
             let drop = self.mod_drop(d, target, d.at)?;
-            let line = target.vertical || (d.whole_tab && target.kind == "tab");
-            Some(if line { drop_line(target.bounds, drop.after, target.vertical) } else { drop_box(target.bounds) })
+            Some(match drop.line { Some(after) => drop_line(target.bounds, after, target.vertical), None => drop_box(target.bounds) })
         });
         let preview = mod_preview.or_else(|| self.pane_drag.as_ref().and_then(|d| d.target.as_ref()).and_then(|(id, edge)| {
             let mut b = *self.bounds.borrow().get(id)?;
@@ -352,7 +378,7 @@ fn event_bounds(event: &Value) -> Option<Bounds<Pixels>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{STRIP, drop_zone, drops_after, inherited_movable, pane_drop_stays, sibling_edge, tab_drop_index, top_strip};
+    use super::{STRIP, drop_zone, drops_after, inherited_movable, pane_drop_stays, row_edge, sibling_edge, tab_drop_index, top_strip};
     use crate::layout::{Axis, Content, Edge, Node};
     use gpui::{Bounds, point, px, size};
     #[test]
@@ -378,13 +404,14 @@ mod tests {
     }
     #[test]
     fn pane_drops_where_the_pane_already_is_stay() {
-        for (kind, target, alone_in_space, expected) in [
-            ("pane", "p1", None, true), ("pane", "p2", None, false),
-            ("tab", "c1", None, true), ("tab", "c2", None, false),
-            ("space", "s1", Some("s1"), true), ("space", "s1", None, false), ("space", "s2", Some("s1"), false),
-            ("mod", "p1", Some("s1"), false),
+        for (kind, target, alone_in_space, vertical, expected) in [
+            ("pane", "p1", None, false, true), ("pane", "p2", None, false, false),
+            ("tab", "c1", None, false, true), ("tab", "c2", None, false, false),
+            ("tab", "c1", None, true, false), ("tab", "c1", Some("s1"), true, true),
+            ("space", "s1", Some("s1"), false, true), ("space", "s1", None, false, false), ("space", "s2", Some("s1"), false, false),
+            ("mod", "p1", Some("s1"), false, false),
         ] {
-            assert_eq!(pane_drop_stays(kind, target, "p1", "c1", alone_in_space), expected, "{kind} {target} alone in {alone_in_space:?}");
+            assert_eq!(pane_drop_stays(kind, target, "p1", "c1", alone_in_space, vertical), expected, "{kind} {target} alone in {alone_in_space:?} vertical={vertical}");
         }
     }
     #[test]
@@ -393,6 +420,13 @@ mod tests {
         assert!(!drops_after(b, point(px(290.), px(112.)), true));
         assert!(drops_after(b, point(px(10.), px(114.)), true));
         assert!(drops_after(b, point(px(290.), px(112.)), false));
+    }
+    #[test]
+    fn pane_drops_on_a_row_edge_land_beside_it_and_the_middle_joins() {
+        let b = Bounds::new(point(px(0.), px(100.)), size(px(300.), px(26.)));
+        for (y, expected) in [(101., Some(false)), (107., Some(false)), (113., None), (119., Some(true)), (125., Some(true))] {
+            assert_eq!(row_edge(b, point(px(150.), px(y))), expected, "y={y}");
+        }
     }
     #[test]
     fn pane_lines_follow_the_split_reading_order() {
