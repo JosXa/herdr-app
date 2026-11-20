@@ -345,6 +345,34 @@ impl Model {
         true
     }
 
+    /// Splits a whole tab in beside the focused pane of another tab on the same machine, keeping its
+    /// layout and pane IDs. The source tab closes, and its space too if it was the last tab.
+    pub fn merge_tab(&mut self, source: &str, into: &str) -> bool {
+        if source == into { return false; }
+        let (Some(from), Some(to)) = (self.space_of(source), self.space_of(into)) else { return false };
+        if from.machine != to.machine { return false; }
+        let machine = from.machine.clone();
+        let (Some(tab), Some(destination)) = (from.tab(source).cloned(), to.tab(into)) else { return false };
+        let Some(target) = destination.focused_pane() else { return false };
+        let mut root = destination.root.clone();
+        let mut block = match tab.root.children() {
+            [only] => only.clone(),
+            _ => Node { id: self.fresh_id_on("s", machine.as_deref()), ..tab.root.clone() },
+        };
+        block.size = None;
+        let container = self.fresh_id_on("s", machine.as_deref());
+        if !root.split(&target, Axis::Row, block, container) { return false; }
+        self.remove_tab(source);
+        let destination = self.tab_mut(into).unwrap();
+        destination.root = root;
+        destination.zoomed = None;
+        match tab.focused_pane() {
+            Some(pane) => self.focus_pane(&pane),
+            None => self.select_tab(into),
+        };
+        true
+    }
+
     pub fn move_pane_to(&mut self, pane: &str, space: Option<&str>, tab: Option<&str>, target: Option<&str>, edge: Option<crate::layout::Edge>) -> bool {
         if [space.is_some(), tab.is_some(), target.is_some()].into_iter().filter(|present| *present).count() != 1 { return false; }
         let Some(source_space) = self.space_of(pane) else { return false };
@@ -880,6 +908,34 @@ mod tests {
         assert_eq!(m.recent[0].name, "api");
         assert!(m.move_tab("c2", "p2", Some(1)));
         assert_eq!(m.space("p2").unwrap().tabs[0].id, "c2");
+    }
+
+    #[test]
+    fn merged_tabs_split_in_beside_the_focused_pane_and_keep_their_layout() {
+        let mut m = model_with_one();
+        m.split("x1", Axis::Column, "x4", "t4");
+        m.tab_mut("c1").unwrap().focus("x1");
+        m.add_tab("p1", Tab::new("c2", "single", "x2", "t2"));
+        m.add_space("p2", "web", "/web", Tab::new("c3", "target", "x3", "t3"));
+        m.split("x3", Axis::Row, "x5", "t5");
+        m.tab_mut("c3").unwrap().focus("x3");
+        let before = format!("{:?}", m.spaces);
+        for (source, into) in [("c1", "c1"), ("missing", "c3"), ("c1", "missing"), ("x1", "c3")] {
+            assert!(!m.merge_tab(source, into));
+            assert_eq!(format!("{:?}", m.spaces), before);
+        }
+        assert!(m.merge_tab("c1", "c3"));
+        assert!(m.tab("c1").is_none());
+        let target = m.tab("c3").unwrap();
+        assert_eq!(target.root.panes().iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["x3", "x1", "x4", "x5"]);
+        assert_eq!(target.root.parent_of("x1").unwrap().axis(), Some(Axis::Column));
+        assert!(target.root.find("c1").is_none());
+        assert_eq!(m.address_of("x4").as_deref(), Some("t4"));
+        assert_eq!(m.focused_pane().as_deref(), Some("x1"));
+        assert!(m.merge_tab("c2", "c3"));
+        assert!(m.space("p1").is_none());
+        assert_eq!(m.focused_pane().as_deref(), Some("x2"));
+        assert_eq!(m.tab("c3").unwrap().root.panes().len(), 5);
     }
 
     #[test]

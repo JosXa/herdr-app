@@ -2978,9 +2978,13 @@ impl AppWindow {
             }
             "tab.move" => {
                 let Some(id) = Self::arg(a, "id") else { return self.fail("tab.move needs id") };
-                let destination = Self::owned(a, "space").or_else(|| self.model.space_of(id).map(|p| p.id.clone()));
-                let Some(destination) = destination else { return self.fail("no such tab or space") };
-                if !self.model.move_tab(id, &destination, a.get("index").and_then(Value::as_u64).map(|i| i as usize)) { return self.fail("tab move needs a tab and space on the same machine"); }
+                if let Some(into) = Self::arg(a, "tab") {
+                    if !self.model.merge_tab(id, into) { return self.fail("tab merge needs two tabs on the same machine"); }
+                } else {
+                    let destination = Self::owned(a, "space").or_else(|| self.model.space_of(id).map(|p| p.id.clone()));
+                    let Some(destination) = destination else { return self.fail("no such tab or space") };
+                    if !self.model.move_tab(id, &destination, a.get("index").and_then(Value::as_u64).map(|i| i as usize)) { return self.fail("tab move needs a tab and space on the same machine"); }
+                }
                 self.write_where(cx);
             }
             "pane.move" => {
@@ -6031,6 +6035,65 @@ export default class Probe extends View {
             assert!(tab.root.find("pane").is_some());
             assert_eq!(tab.root.panes().iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["other-pane", "pane"]);
         });
+    }
+
+    #[test]
+    fn tabs_dropped_on_a_tab_middle_split_into_it() {
+        in_own_process("tab_merge_bridge");
+    }
+
+    #[gpui::test]
+    fn tab_merge_bridge(cx: &mut gpui::TestAppContext) {
+        use gpui::{MouseButton, point, px};
+        use serde_json::json;
+        if !running_alone("tab_merge_bridge") { return; }
+        let (view, cx) = open_window(cx, "tab-merge-test", r#"
+            import { View, div } from 'gpui-kit';
+            import { beginDrag, dragTarget } from 'herdr';
+            const tab = id => div().w(200).h(40).child(id)
+                .on_mouse_down('left', e => beginDrag('tab', id, e))
+                .on_mouse_move(e => dragTarget('tab', id, e));
+            export default class Tabs extends View {
+                render() { return div().size_full().flex().flex_row().child(tab('tab')).child(tab('other')); }
+            }
+        "#, json!({"id":"main","type":"block","content":{"mod":"tab-merge-test"}}));
+        let reset = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.model = Default::default();
+                this.model.add_space("space", "space", "", crate::model::Tab::new("tab", "work", "pane", "terminal"));
+                this.model.add_tab("space", crate::model::Tab::new("other", "other", "other-pane", "other-terminal"));
+                this.documents.entry(String::new()).or_default().available = true;
+                this.sync(window, cx);
+                this.focus.focus(window, cx);
+                cx.notify();
+            }));
+            cx.run_until_parked();
+        };
+        let origin = view.update(cx, |this, _| this.bounds.borrow()["main"].origin);
+        let at = |x| origin + point(px(x), px(20.));
+        let drag = |cx: &mut gpui::VisualTestContext, to: f32| {
+            cx.simulate_mouse_down(at(100.), MouseButton::Left, Default::default());
+            cx.run_until_parked();
+            cx.simulate_mouse_move(at(to), Some(MouseButton::Left), Default::default());
+            cx.run_until_parked();
+            cx.simulate_mouse_up(at(to), MouseButton::Left, Default::default());
+            cx.run_until_parked();
+        };
+        let tabs = |this: &super::AppWindow| this.model.space("space").unwrap().tabs.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+        reset(cx);
+        drag(cx, 300.);
+        view.update(cx, |this, _| {
+            assert_eq!(tabs(this), ["other"]);
+            let merged = this.model.tab("other").unwrap();
+            assert_eq!(merged.root.panes().iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["other-pane", "pane"]);
+            assert_eq!(this.model.focused_pane().as_deref(), Some("pane"));
+        });
+        reset(cx);
+        drag(cx, 390.);
+        view.update(cx, |this, _| assert_eq!(tabs(this), ["other", "tab"]));
+        reset(cx);
+        drag(cx, 120.);
+        view.update(cx, |this, _| assert_eq!(tabs(this), ["tab", "other"]));
     }
 
     #[test]

@@ -7,7 +7,8 @@ up agents and programs, read `hc --skill` and use hc.
 Your terminal address is `$HC_TERMINAL_ID`; it is not a pane ID.
 
 Move existing work with `tab.move {id, space, index?}` or `pane.move {pane, space}`
-(the pane becomes a new tab), or `pane.move {pane, tab}` to split into a tab.
+(the pane becomes a new tab), or `pane.move {pane, tab}` and `tab.move {id, tab}`
+to split a pane or a whole tab into a tab.
 Moves preserve running processes and IDs and require the same machine, including
 between spaces on one remote machine. Empty source tabs and spaces close.
 

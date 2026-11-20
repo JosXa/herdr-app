@@ -258,9 +258,10 @@ Properties any node can have:
   from left `on_mouse_down` and `dragTarget("space" | "tab" | "pane" | "mod", id, event)`
   from `on_mouse_move` on destination rows. The app owns the drag until release or Escape;
   it requires a four-pixel move before dropping and uses the destination event's bounds.
-  A tab dropped on a space moves intact. A pane becomes a new tab there. Drops on tabs
-  put a tab before or after that tab, by the hovered half, which an insertion bar marks;
-  a pane drop adds the pane beside the tab's focused pane. Moves stay on the
+  A tab dropped on a space moves intact. A pane becomes a new tab there. A tab dropped
+  on the outer 30% of another tab goes before or after it, which an insertion bar marks;
+  dropped on its middle, which a box marks, it splits into that tab beside its focused
+  pane, like `tab.move {id, tab}`. A pane drop adds the pane beside the tab's focused pane. Moves stay on the
   same machine, including between remote spaces. A `mod` target moves nothing; the drop
   sends the reporting mod's `nextCommand()` `drop {"target": id, "tab" | "pane": dragged}`,
   on any machine. `panes()` exposes `movable`.
@@ -577,6 +578,7 @@ The main ones:
   closes its space; agents pass confirmed: true),
    `tab.rename {id?, name}` ("": its number again), `tab.move {id, index?, space?}`
    (index starts at 1, space defaults to its current space, omitted index appends),
+   `tab.move {id, tab}` (splits the whole tab into another tab, right of its focused pane; the source tab closes),
   `tab.select {index | id}`, `tab.next`, `tab.prev`,
   `tab.settle {id?}`, `tab.unsettle {id?}` (index, next and prev
   skip settled tabs).

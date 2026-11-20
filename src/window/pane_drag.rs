@@ -37,10 +37,14 @@ enum NewTab {
     Beside { tab: String, after: bool },
 }
 
-/// The top or bottom edge of a list row a pane lands beside as a new tab (Some(after)); None joins the row.
-fn row_edge(bounds: Bounds<Pixels>, at: Point<Pixels>) -> Option<bool> {
-    let y = f32::from(at.y - bounds.origin.y) / f32::from(bounds.size.height);
-    if y < 0.3 { Some(false) } else if y > 0.7 { Some(true) } else { None }
+/// The leading or trailing edge of a tab a drop lands beside (Some(after)); None joins the tab.
+fn row_edge(bounds: Bounds<Pixels>, at: Point<Pixels>, vertical: bool) -> Option<bool> {
+    let along = if vertical {
+        f32::from(at.y - bounds.origin.y) / f32::from(bounds.size.height)
+    } else {
+        f32::from(at.x - bounds.origin.x) / f32::from(bounds.size.width)
+    };
+    if along < 0.3 { Some(false) } else if along > 0.7 { Some(true) } else { None }
 }
 
 /// The outer quarter of a pane chooses its nearest edge; the middle swaps.
@@ -295,10 +299,14 @@ impl AppWindow {
         let listed = vertical.then_some(after);
         let drop = |command, args, line| Some(ModDrop { command, args, line, new_tab: None });
         match (d.whole_tab, kind.as_str()) {
-            (true, "tab") => {
-                let (space, index) = self.tab_drop(&d.pane, id, after)?;
-                drop("tab.move", json!({"id":d.pane,"space":space,"index":index}), Some(after))
-            }
+            (true, "tab") => match row_edge(*bounds, at, *vertical) {
+                Some(after) => {
+                    let (space, index) = self.tab_drop(&d.pane, id, after)?;
+                    drop("tab.move", json!({"id":d.pane,"space":space,"index":index}), Some(after))
+                }
+                None if *id == d.pane => None,
+                None => drop("tab.move", json!({"id":d.pane,"tab":id}), None),
+            },
             (true, "space") if *vertical => {
                 let space = self.model.space(id)?;
                 if space.tabs.first().is_some_and(|t| t.id == d.pane) { return None; }
@@ -312,7 +320,7 @@ impl AppWindow {
             }
             (false, "pane") => drop("pane.move", json!({"pane":d.pane,"target":id}), None),
             (false, "space") => Some(ModDrop { command: "pane.move", args: json!({"pane":d.pane,"space":id}), line: listed.map(|_| true), new_tab: vertical.then_some(NewTab::First) }),
-            (false, "tab") if *vertical && let Some(after) = row_edge(*bounds, at) => Some(ModDrop {
+            (false, "tab") if *vertical && let Some(after) = row_edge(*bounds, at, true) => Some(ModDrop {
                 command: "pane.move",
                 args: json!({"pane":d.pane,"space":self.model.space_of(id)?.id}),
                 line: Some(after),
@@ -422,10 +430,14 @@ mod tests {
         assert!(drops_after(b, point(px(290.), px(112.)), false));
     }
     #[test]
-    fn pane_drops_on_a_row_edge_land_beside_it_and_the_middle_joins() {
-        let b = Bounds::new(point(px(0.), px(100.)), size(px(300.), px(26.)));
+    fn drops_on_a_tab_edge_land_beside_it_and_the_middle_joins() {
+        let row = Bounds::new(point(px(0.), px(100.)), size(px(300.), px(26.)));
         for (y, expected) in [(101., Some(false)), (107., Some(false)), (113., None), (119., Some(true)), (125., Some(true))] {
-            assert_eq!(row_edge(b, point(px(150.), px(y))), expected, "y={y}");
+            assert_eq!(row_edge(row, point(px(150.), px(y)), true), expected, "y={y}");
+        }
+        let tab = Bounds::new(point(px(100.), px(0.)), size(px(200.), px(30.)));
+        for (x, expected) in [(110., Some(false)), (155., Some(false)), (200., None), (245., Some(true)), (290., Some(true))] {
+            assert_eq!(row_edge(tab, point(px(x), px(15.)), false), expected, "x={x}");
         }
     }
     #[test]
