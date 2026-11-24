@@ -99,6 +99,10 @@ taffy = { path = "vendor/taffy" }
 # object-returning functions (longbridge/quickjs-jit#38, HERDR:).
 [patch."https://github.com/longbridge/quickjs-jit"]
 quickjs-jit-runtime = { path = "vendor/quickjs-jit-runtime" }
+# Our copy: QuickJS never frees a loaded module, so every mod reload kept its
+# whole module graph until the 256 MiB engine cap failed every view. Patch
+# 0033 frees retired generations (HERDR:).
+quickjs-jit-sys = { path = "vendor/quickjs-jit-sys" }
 
 # With --target (CI builds Intel Macs on Apple Silicon), stripping a macOS
 # proc-macro loses what rustc loads from it: "can't find crate". Build-time
