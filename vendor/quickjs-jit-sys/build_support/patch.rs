@@ -30,7 +30,7 @@ const EXPECTED_PATCHES: [(&str, u64); 29] = [
     ("0028-tier1-iteration.patch", 0x40d9_9376_b310_d4d4),
     ("0029-native-call-convention.patch", 0xb9cf_65e5_3bca_852e),
     ("0032-object-fast-paths.patch", 0x3104_b683_7243_9d7e),
-    ("0033-free-retired-modules.patch", 0x30e1_8112_93b6_18bf),
+    ("0033-free-retired-modules.patch", 0xc010_5265_bf6e_cae5),
 ];
 pub(crate) const BASELINE_FILES: [&str; 19] = [
     "api-test.c",
@@ -70,7 +70,7 @@ const PATCHED_FILE_FINGERPRINTS: [(&str, u64); 21] = [
     ("list.h", 0xb337_70f7_b76d_a3d8),
     ("quickjs-atom.h", 0x30b4_9116_b6a2_aa99),
     ("quickjs-c-atomics.h", 0x490b_0f29_f631_3fc0),
-    ("quickjs.c", 0xe38d_f04d_7708_5456),
+    ("quickjs.c", 0xc6c2_628e_8581_2891),
     ("quickjs-jit.h", 0xcb77_8ada_a891_dd38),
     ("quickjs-jit-helpers.h", 0x7a0c_9a1f_beb2_0014),
     ("quickjs-opcode.h", 0x3d05_cfdf_5cf7_2930),

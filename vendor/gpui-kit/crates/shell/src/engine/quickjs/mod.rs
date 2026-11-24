@@ -10675,6 +10675,80 @@ export default class Panel extends View { render() { return div(); } }
     }
 
     #[test]
+    fn a_namespace_chain_stays_readable_after_its_generation_is_freed() {
+        let runtime = ShellRuntime::new_isolated().expect("runtime");
+        let root = std::env::temp_dir().join(format!(
+            "gpui-shell-namespace-chain-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("application directory");
+        for (file, source) in [
+            ("leaf.js", "export const word = 'deep';"),
+            ("middle.js", "export * as leaf from './leaf.js';"),
+            ("top.js", "export * as middle from './middle.js';"),
+            (
+                "main.js",
+                "import * as top from './top.js';\n\
+                 globalThis.kept ??= top;\n\
+                 export default class Panel {}",
+            ),
+        ] {
+            std::fs::write(root.join(file), source).expect("module");
+        }
+
+        drop(runtime.load_app(&root, "main.js").expect("load"));
+
+        assert_eq!(runtime.free_retired_modules(), 4);
+        let word = runtime
+            .with_js(|ctx| ctx.eval::<String, _>("globalThis.kept.middle.leaf.word"))
+            .expect("the kept namespace chain");
+        assert_eq!(word, "deep");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retirement_under_a_memory_limit_keeps_lazy_namespace_exports() {
+        for headroom in (0..1024).step_by(16) {
+            let runtime = ShellRuntime::new_isolated().expect("runtime");
+            let root = std::env::temp_dir().join(format!(
+                "gpui-shell-namespace-memory-limit-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).expect("application directory");
+            for (file, source) in [
+                ("inner.js", "export const word = 'kept';"),
+                ("outer.js", "export * as inner from './inner.js';"),
+                (
+                    "main.js",
+                    "import * as outer from './outer.js';\n\
+                     globalThis.outer ??= outer;\n\
+                     export default class Panel {}",
+                ),
+            ] {
+                std::fs::write(root.join(file), source).expect("module");
+            }
+            drop(runtime.load_app(&root, "main.js").expect("load"));
+
+            runtime.js_runtime.run_gc();
+            let allocated = runtime.js_runtime.memory_usage().malloc_size;
+            runtime
+                .js_runtime
+                .set_memory_limit(allocated as usize + headroom);
+            let freed = runtime.free_retired_modules();
+            runtime.js_runtime.set_memory_limit(usize::MAX);
+
+            let word = runtime
+                .with_js(|ctx| ctx.eval::<String, _>("globalThis.outer.inner.word"))
+                .expect("the kept namespace");
+            assert_eq!(word, "kept", "memory limit headroom {headroom}");
+            assert_eq!(freed + runtime.free_retired_modules(), 3);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
     fn a_null_exception_reads_as_the_memory_limit() {
         let runtime = ShellRuntime::new_isolated().expect("runtime");
         let message = runtime

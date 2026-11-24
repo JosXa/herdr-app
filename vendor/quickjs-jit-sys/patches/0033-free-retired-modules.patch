@@ -1,7 +1,7 @@
 diff --git a/quickjs.c b/quickjs.c
 --- a/quickjs.c
 +++ b/quickjs.c
-@@ -34422,6 +34422,131 @@ static void js_free_module_def(JSContext *ctx, JSModuleDef *m)
+@@ -34422,6 +34422,185 @@ static void js_free_module_def(JSContext *ctx, JSModuleDef *m)
      js_free(ctx, m);
  }
  
@@ -37,41 +37,88 @@ diff --git a/quickjs.c b/quickjs.c
 +         m->status == JS_MODULE_STATUS_EVALUATED);
 +}
 +
-+static void js_materialize_module_ns(JSContext *ctx, JSModuleDef *m)
++static int js_module_ns_autoinit_count(JSModuleDef *m)
 +{
-+    JSObject *p;
 +    JSShape *sh;
 +    JSShapeProperty *prs;
-+    JSAtom *atoms;
-+    int i, count;
++    int i, count = 0;
 +
 +    if (JS_VALUE_GET_TAG(m->module_ns) != JS_TAG_OBJECT)
-+        return;
-+    p = JS_VALUE_GET_OBJ(m->module_ns);
-+    sh = p->shape;
-+    count = 0;
++        return 0;
++    sh = JS_VALUE_GET_OBJ(m->module_ns)->shape;
 +    for(i = 0, prs = sh->prop; i < sh->prop_count; i++, prs++) {
 +        if ((prs->flags & JS_PROP_TMASK) == JS_PROP_AUTOINIT)
 +            count++;
 +    }
++    return count;
++}
++
++static int js_materialize_module_ns_property(JSContext *ctx, JSModuleDef *m,
++                                             JSAtom atom)
++{
++    JSShapeProperty *prs;
++    JSProperty *pr;
++    JSValue value;
++
++    prs = find_own_property(&pr, JS_VALUE_GET_OBJ(m->module_ns), atom);
++    if (!prs || (prs->flags & JS_PROP_TMASK) != JS_PROP_AUTOINIT)
++        return 0;
++    if (js_autoinit_get_id(pr) == JS_AUTOINIT_ID_MODULE_NS) {
++        value = JS_GetModuleNamespace(ctx, pr->u.init.opaque);
++        if (JS_IsException(value)) {
++            JS_FreeValue(ctx, JS_GetException(ctx));
++            return -1;
++        }
++        JS_FreeValue(ctx, value);
++    }
++    value = JS_GetProperty(ctx, m->module_ns, atom);
++    if (JS_IsException(value)) {
++        JS_FreeValue(ctx, JS_GetException(ctx));
++        return -1;
++    }
++    JS_FreeValue(ctx, value);
++    return 0;
++}
++
++static int js_materialize_module_ns(JSContext *ctx, JSModuleDef *m)
++{
++    JSShape *sh;
++    JSShapeProperty *prs;
++    JSAtom *atoms;
++    int i, count, ret;
++
++    count = js_module_ns_autoinit_count(m);
 +    if (count == 0)
-+        return;
++        return 0;
 +    atoms = js_malloc(ctx, sizeof(atoms[0]) * count);
 +    if (!atoms)
-+        return;
++        return -1;
++    sh = JS_VALUE_GET_OBJ(m->module_ns)->shape;
 +    count = 0;
 +    for(i = 0, prs = sh->prop; i < sh->prop_count; i++, prs++) {
 +        if ((prs->flags & JS_PROP_TMASK) == JS_PROP_AUTOINIT)
 +            atoms[count++] = JS_DupAtom(ctx, prs->atom);
 +    }
++    ret = 0;
 +    for(i = 0; i < count; i++) {
-+        JSValue value = JS_GetProperty(ctx, m->module_ns, atoms[i]);
-+        if (JS_IsException(value))
-+            JS_FreeValue(ctx, JS_GetException(ctx));
-+        JS_FreeValue(ctx, value);
++        if (ret == 0 && js_materialize_module_ns_property(ctx, m, atoms[i]) < 0)
++            ret = -1;
 +        JS_FreeAtom(ctx, atoms[i]);
 +    }
 +    js_free(ctx, atoms);
++    if (ret == 0 && js_module_ns_autoinit_count(m) != 0)
++        ret = -1;
++    return ret;
++}
++
++static int js_module_ns_created_count(JSModuleDef **modules, int count)
++{
++    int i, created = 0;
++    for(i = 0; i < count; i++) {
++        if (JS_VALUE_GET_TAG(modules[i]->module_ns) == JS_TAG_OBJECT)
++            created++;
++    }
++    return created;
 +}
 +
 +size_t JS_FreeRetiredModules(JSContext *ctx,
@@ -81,7 +128,7 @@ diff --git a/quickjs.c b/quickjs.c
 +{
 +    struct list_head *el;
 +    JSModuleDef **candidates = NULL;
-+    int count = 0, size = 0, i;
++    int count = 0, size = 0, created, i;
 +    bool changed;
 +
 +    list_for_each(el, &ctx->loaded_modules) {
@@ -122,8 +169,15 @@ diff --git a/quickjs.c b/quickjs.c
 +        }
 +    } while (changed);
 +
-+    for(i = 0; i < count; i++)
-+        js_materialize_module_ns(ctx, candidates[i]);
++    do {
++        created = js_module_ns_created_count(candidates, count);
++        for(i = 0; i < count; i++) {
++            if (js_materialize_module_ns(ctx, candidates[i]) < 0) {
++                js_free(ctx, candidates);
++                return 0;
++            }
++        }
++    } while (js_module_ns_created_count(candidates, count) != created);
 +    for(i = 0; i < count; i++)
 +        js_free_module_def(ctx, candidates[i]);
 +    js_free(ctx, candidates);
