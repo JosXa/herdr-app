@@ -1676,6 +1676,10 @@ fn describe_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> String {
         };
     }
 
+    if value.is_null() {
+        return super::MEMORY_LIMIT_REACHED.to_owned();
+    }
+
     if let Some(text) = value.as_string().and_then(|text| text.to_string().ok()) {
         return text;
     }

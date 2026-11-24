@@ -1607,6 +1607,12 @@ impl ShellRuntime {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn collected_memory_used(&self) -> i64 {
+        self.js_runtime.run_gc();
+        self.js_runtime.memory_usage().memory_used_size
+    }
+
     /// A runtime with the JIT attached, for the tests and benchmarks that
     /// compare against it.
     #[cfg(test)]
@@ -2218,6 +2224,8 @@ impl ShellRuntime {
             });
         }
 
+        self.free_retired_modules();
+
         // Every load is a new generation, which is what makes a reload pick up
         // a change in an imported module rather than only in the entry point.
         let module_lease = self
@@ -2249,6 +2257,27 @@ impl ShellRuntime {
             self.release_application_generation_without_context(&application);
         }
         loaded
+    }
+
+    /// Frees the cached modules of every generation no view type or view holds
+    /// a lease on any more.
+    ///
+    /// QuickJS never frees a loaded module on its own, so without this each
+    /// reload kept its whole module graph until the engine's memory cap.
+    fn free_retired_modules(&self) -> usize {
+        let live = self.app_modules.live_generations();
+        self.js_runtime.run_gc();
+        self.with_js(|ctx| {
+            Ok(unsafe {
+                JS_FreeRetiredModules(
+                    ctx.as_raw().as_ptr(),
+                    module_generation_is_retired,
+                    std::ptr::from_ref(&live).cast_mut().cast(),
+                    DECLARED_MODULE_REFERENCES,
+                )
+            })
+        })
+        .unwrap_or(0)
     }
 
     /// Evaluates a module and returns its default export, which must be a view
@@ -5347,9 +5376,35 @@ struct AppModules {
     /// silently ignores every file except the entry point is worse than no hot
     /// reload, because it looks like it worked. Tagging the resolved name with
     /// a generation makes each reload a different module as far as the cache is
-    /// concerned. The previous generation stays in the cache until the runtime
-    /// shuts down; that is the cost, and it is a development-only one.
+    /// concerned. Once the last lease on a generation drops,
+    /// [`ShellRuntime::free_retired_modules`] frees its modules.
     next_generation: Rc<Cell<u32>>,
+}
+
+unsafe extern "C" {
+    fn JS_FreeRetiredModules(
+        ctx: *mut rquickjs::qjs::JSContext,
+        is_retired: unsafe extern "C" fn(*const std::ffi::c_char, *mut std::ffi::c_void) -> bool,
+        opaque: *mut std::ffi::c_void,
+        owned_references: std::ffi::c_int,
+    ) -> usize;
+}
+
+/// The references a module compiled by `Module::declare` keeps for good: the
+/// context's module list holds one, and the compile-only value that rquickjs
+/// turns into a module pointer without freeing holds the other. A module with
+/// no more than these is referenced by no pending job or function.
+const DECLARED_MODULE_REFERENCES: std::ffi::c_int = 2;
+
+unsafe extern "C" fn module_generation_is_retired(
+    name: *const std::ffi::c_char,
+    live: *mut std::ffi::c_void,
+) -> bool {
+    let live = unsafe { &*live.cast::<HashSet<u32>>() };
+    let Ok(name) = unsafe { std::ffi::CStr::from_ptr(name) }.to_str() else {
+        return false;
+    };
+    AppModules::generation(name).is_some_and(|generation| !live.contains(&generation))
 }
 
 #[derive(Clone)]
@@ -5432,6 +5487,14 @@ impl AppModules {
 
     fn generation(name: &str) -> Option<u32> {
         name.rsplit_once("?v=")?.1.parse().ok()
+    }
+
+    fn live_generations(&self) -> HashSet<u32> {
+        self.applications
+            .borrow()
+            .iter()
+            .map(|application| application.generation)
+            .collect()
     }
 
     #[cfg(test)]
@@ -10369,9 +10432,22 @@ fn describe(ctx: &Ctx<'_>, error: JsError) -> String {
             ),
             None => exception.message().unwrap_or_else(|| "error".into()),
         },
+        None => describe_thrown_value(&value),
+    }
+}
+
+fn describe_thrown_value(value: &Value<'_>) -> String {
+    if value.is_null() {
+        return MEMORY_LIMIT_REACHED.to_owned();
+    }
+    match value.as_string().and_then(|text| text.to_string().ok()) {
+        Some(text) => text,
         None => format!("{value:?}"),
     }
 }
+
+const MEMORY_LIMIT_REACHED: &str =
+    "JavaScript memory limit reached: QuickJS could not allocate the error object";
 
 fn js_setup_error(error: JsError) -> anyhow::Error {
     anyhow!("failed to start the JavaScript runtime: {error}")
@@ -10539,6 +10615,75 @@ export default class Panel extends View { render() { return div(); } }
         drop(second);
         assert_eq!(runtime.app_modules.registration_count(), 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reloads_free_retired_generations_and_keep_leased_ones_working() {
+        let runtime = ShellRuntime::new_isolated().expect("runtime");
+        let root = std::env::temp_dir().join(format!(
+            "gpui-shell-reload-memory-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("application directory");
+        std::fs::write(
+            root.join("main.js"),
+            "import { caption } from './caption.js';\n\
+             export default class Panel {\n\
+               static label() { return caption(); }\n\
+               static async imported() { return (await import('./caption.js')).caption(); }\n\
+             }",
+        )
+        .expect("entry module");
+        let helpers: String = (0..400)
+            .map(|index| format!("export function helper{index}(value) {{ return [value, {index}].join('-'); }}\n"))
+            .collect();
+        std::fs::write(
+            root.join("caption.js"),
+            format!("{helpers}export const caption = () => helper1('kept');\n"),
+        )
+        .expect("caption module");
+        let kept = runtime.load_app(&root, "main.js").expect("kept load");
+        let reload = |count: usize| {
+            for _ in 0..count {
+                drop(runtime.load_app(&root, "main.js").expect("reload"));
+            }
+            runtime.collected_memory_used()
+        };
+
+        let settled = reload(5);
+        let after_many = reload(120);
+
+        assert!(
+            after_many <= settled + 64 * 1024,
+            "120 reloads grew engine memory from {settled} to {after_many} bytes"
+        );
+        let (label, imported) = runtime
+            .with_js(|ctx| {
+                let class = kept.value.clone().restore(ctx)?;
+                let label: rquickjs::Function = class.get("label")?;
+                let imported: rquickjs::Function = class.get("imported")?;
+                Ok((
+                    label.call::<_, String>(())?,
+                    imported.call::<_, rquickjs::Promise>(())?.finish::<String>()?,
+                ))
+            })
+            .expect("the leased generation still runs");
+        assert_eq!(label, "kept-1");
+        assert_eq!(imported, "kept-1");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_null_exception_reads_as_the_memory_limit() {
+        let runtime = ShellRuntime::new_isolated().expect("runtime");
+        let message = runtime
+            .with_js(|ctx| {
+                let error = ctx.throw(rquickjs::Value::new_null(ctx.clone()));
+                Ok(super::describe(ctx, error))
+            })
+            .expect("describe");
+        assert_eq!(message, super::MEMORY_LIMIT_REACHED);
     }
 
     #[test]
