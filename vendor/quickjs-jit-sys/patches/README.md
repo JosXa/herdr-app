@@ -205,7 +205,12 @@ are not part of a pending async evaluation, hold no more references than the
 caller owns by design, and that no surviving module imports, awaits or shares
 a cycle root with. Before freeing, it materializes the lazy `export * as`
 properties of each module's namespace, because those resolve their target
-module by pointer. A freed module's functions keep running, because closures
+module by pointer. Resolving one property can create the namespace of another
+selected module, so it repeats until no new namespace appears. It creates the
+target namespace before it reads such a property, because QuickJS replaces a
+lazy property whose initializer fails with `undefined`. If a namespace or
+property cannot be resolved, for example because an allocation fails, the lazy
+export stays in place and it frees nothing and returns 0. A freed module's functions keep running, because closures
 hold their own variable references; `import.meta` in such a function throws
 the existing "not supported in this context" TypeError.
 
