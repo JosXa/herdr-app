@@ -1,0 +1,2 @@
+{ "place": "none", "title": "Pane info", "focusable": true,
+  "sidebar": { "title": "Info", "side": "right", "px": 280, "min": 200, "max": 520 } }
