@@ -333,9 +333,9 @@ Open a pane's own sidebar (default: the focused pane) on a mod tab: adds it (id 
 
 | Argument | Required |
 |---|---|
+| `mod` | no |
 | `pane` | no |
 | `terminal` | no |
-| `mod` | no |
 | `id` | no |
 | `title` | no |
 | `props` | no |
@@ -361,9 +361,9 @@ Open a pane's sidebar as pane.sidebar.open does, or hide it when it already show
 
 | Argument | Required |
 |---|---|
+| `mod` | no |
 | `pane` | no |
 | `terminal` | no |
-| `mod` | no |
 | `id` | no |
 | `title` | no |
 | `props` | no |

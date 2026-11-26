@@ -398,7 +398,7 @@ width, so its program sees fewer columns. Several mods share one pane's
 sidebar as tabs: a strip on top selects them, ✕ closes one, + lists the
 mods whose `mod.json` has `"sidebar"`, and the header ✕ hides it.
 
-- `pane.sidebar.open {pane? | terminal?, mod?, id?, title?, props?, side?, px?, min?, max?, focus?}`
+- `pane.sidebar.open {mod?, pane? | terminal?, id?, title?, props?, side?, px?, min?, max?, focus?}`
   adds the mod as a tab (`id` defaults to the mod name; opening the same
   id again replaces its props) and shows the sidebar. Without `mod` it
   shows the sidebar again, selecting `id` if given. `side` is `left` or

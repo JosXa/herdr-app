@@ -67,9 +67,9 @@ pub const COMMANDS: &[Command] = &[
     cmd("pane.forward", &[opt("other_space")], "Go forward again after pane.back, as mouse Forward does (other_space: true skips the shown space's panes)."),
     cmd("pane.go", &[req("direction")], "Focus the pane or focusable mod to the \"left\", \"right\", \"up\" or \"down\"."),
     cmd("pane.swap", &[req("direction")], "Swap the focused pane with its neighbor in a direction."),
-    cmd("pane.sidebar.open", &[opt("pane"), opt("terminal"), opt("mod"), opt("id"), opt("title"), opt("props"), opt("side"), opt("px"), opt("min"), opt("max"), opt("focus")], "Open a pane's own sidebar (default: the focused pane) on a mod tab: adds it (id defaults to the mod name; the same id replaces it) or, without mod, shows tab id or the last shown. The pane keeps the rest of its width. side: \"left\" or \"right\"; px, min, max: its width; focus: true gives it the keyboard."),
+    cmd("pane.sidebar.open", &[opt("mod"), opt("pane"), opt("terminal"), opt("id"), opt("title"), opt("props"), opt("side"), opt("px"), opt("min"), opt("max"), opt("focus")], "Open a pane's own sidebar (default: the focused pane) on a mod tab: adds it (id defaults to the mod name; the same id replaces it) or, without mod, shows tab id or the last shown. The pane keeps the rest of its width. side: \"left\" or \"right\"; px, min, max: its width; focus: true gives it the keyboard."),
     cmd("pane.sidebar.close", &[opt("pane"), opt("terminal"), opt("id")], "Hide a pane's sidebar, or with id remove that tab (the last tab removes the sidebar)."),
-    cmd("pane.sidebar.toggle", &[opt("pane"), opt("terminal"), opt("mod"), opt("id"), opt("title"), opt("props"), opt("side"), opt("px"), opt("min"), opt("max"), opt("focus")], "Open a pane's sidebar as pane.sidebar.open does, or hide it when it already shows that tab (or any tab, without mod and id)."),
+    cmd("pane.sidebar.toggle", &[opt("mod"), opt("pane"), opt("terminal"), opt("id"), opt("title"), opt("props"), opt("side"), opt("px"), opt("min"), opt("max"), opt("focus")], "Open a pane's sidebar as pane.sidebar.open does, or hide it when it already shows that tab (or any tab, without mod and id)."),
     cmd("pane.sidebar.focus", &[opt("pane"), opt("terminal")], "Give a pane's open sidebar the keyboard, or give it back to the pane when the sidebar has it (Esc in a sidebar)."),
     cmd("terminal.peek", &[req("terminal")], "Peek at a running terminal over the tab, with keep-as-tab and close controls."),
     cmd("terminal.show", &[opt("terminal"), opt("pane")], "Show a terminal in a pane for now, in place of its own (no terminal: back)."),
@@ -233,6 +233,7 @@ mod tests {
         assert_eq!(names.len(), COMMANDS.len());
         assert_eq!(shorthand(find("tab.select").unwrap(), "3"), json!({ "index": 3 }));
         assert_eq!(shorthand(find("pane.split").unwrap(), "right"), json!({ "direction": "right" }));
+        assert_eq!(shorthand(find("pane.sidebar.toggle").unwrap(), "notes"), json!({ "mod": "notes" }));
         let move_ = find("space.move").unwrap();
         assert_eq!(missing(move_, &json!({ "id": " ", "index": 1 })), Some("id"));
         assert_eq!(missing(move_, &json!({ "id": "sp1", "index": 1 })), None);
