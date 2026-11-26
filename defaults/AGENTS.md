@@ -390,6 +390,36 @@ The tab block says how each pane of the shown tab is wrapped:
 - Each layout has its own, so one can stay bare while another makes
   every pane a card.
 
+### Pane sidebars
+
+A pane can carry a sidebar on its left or right edge, like the window's
+sidebar but owned by that one pane. The terminal keeps the remaining
+width, so its program sees fewer columns. Several mods share one pane's
+sidebar as tabs: a strip on top selects them, ✕ closes one, + lists the
+mods whose `mod.json` has `"sidebar"`, and the header ✕ hides it.
+
+- `pane.sidebar.open {pane? | terminal?, mod?, id?, title?, props?, side?, px?, min?, max?, focus?}`
+  adds the mod as a tab (`id` defaults to the mod name; opening the same
+  id again replaces its props) and shows the sidebar. Without `mod` it
+  shows the sidebar again, selecting `id` if given. `side` is `left` or
+  `right`; `px`, `min`, `max` size it; `focus: true` gives it the keyboard.
+- `pane.sidebar.close {pane? | terminal?, id?}`: with `id`, closes that
+  tab (the last one removes the sidebar); without, hides the sidebar and
+  keeps its tabs.
+- `pane.sidebar.toggle {…same as open}` hides a shown sidebar (or a shown
+  `id`), else opens it.
+- `pane.sidebar.focus {pane? | terminal?}` moves the keyboard into the
+  shown sidebar tab, or back to the terminal. Esc in a sidebar returns to
+  the terminal too.
+- Without `pane` or `terminal`, these act on the focused pane (or the pane
+  whose sidebar holds the keyboard).
+- A sidebar copy gets `props().pane`, `props().terminal` and
+  `props().sidebar` (its tab id) on top of the props passed; it closes
+  itself with `run("pane.sidebar.close", {pane: props().pane, id: props().sidebar})`.
+- `panes()` reports each pane's `sidebar` (open, side, px, active, tabs).
+  Sidebars live in the tab with their pane, so they move, swap and
+  persist with it; dragging the divider sets the width.
+
 ### Floating blocks
 
 ```json
@@ -597,6 +627,8 @@ The main ones:
   `pane.go` also reaches visible mods whose `mod.json` says `"focusable": true`, and
   starts from that mod while it holds the keyboard.
   `pane.swap` uses geometry only. Focus history lasts until the window closes.
+  `pane.sidebar.open`, `pane.sidebar.close`, `pane.sidebar.toggle` and
+  `pane.sidebar.focus` manage a pane's own sidebar (see Pane sidebars).
   `pane.focus {terminal}` prefers the first visible layout terminal block showing that
   address, then its model pane. Clicking a terminal block focuses it too.
   While a layout terminal block is focused, implicit split/close/zoom/go/swap and
@@ -875,6 +907,10 @@ selection and IME can lag the retained content until completion or timeout.
   (`this.handle.focus()`) and handle keys with `on_key_down`. The copy gets `"focus"`
   again after a popup over it closes. Leave with `run("pane.go", {direction})`.
   Without this opt-in, navigation and clicks stay unchanged.
+
+- `"sidebar": { "title": "Notes", "side": "right", "px": 320, "min": 200, "max": 600 }`
+  in `mod.json` offers the mod in a pane sidebar's + list and gives
+  `pane.sidebar.open` its defaults (all keys optional).
 
 - The first time Herdr sees a folder, it docks one copy per `mod.json` into
   the shown layout (`"none"`: only where a layout or another mod puts it).

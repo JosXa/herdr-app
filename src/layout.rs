@@ -48,6 +48,66 @@ impl Edge {
     }
 }
 
+/// A stack of mod tabs on the left or right of a block (a pane's own
+/// sidebar). The block keeps the width it leaves, so a terminal gets fewer
+/// columns. `stack` is a layout stack: its `size`, `min`, `max`, `hidden` and
+/// `active` work as on any other; its children are mod blocks.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Sidebar {
+    #[serde(default)]
+    pub side: Edge,
+    pub stack: Node,
+}
+
+impl Sidebar {
+    pub const PX: f32 = 320.0;
+    pub const MIN: f32 = 160.0;
+
+    fn new() -> Sidebar {
+        let mut stack = Node::new("sidebar", Kind::Stack { children: Vec::new(), active: None, header: None });
+        stack.size = Some(Size::Px { px: Sidebar::PX });
+        Sidebar { side: Edge::Right, stack }
+    }
+
+    /// Open, with a tab to show.
+    pub fn shown(&self) -> bool {
+        !self.stack.hidden && self.stack.active_child().is_some()
+    }
+
+    /// Its width at zoom 1, within its min and max.
+    pub fn px(&self) -> f32 {
+        let px = match self.stack.size { Some(Size::Px { px }) => px, _ => Sidebar::PX };
+        px.min(self.stack.max.unwrap_or(f32::INFINITY)).max(self.stack.min.unwrap_or(Sidebar::MIN))
+    }
+
+    pub fn tabs(&self) -> &[Node] {
+        self.stack.children()
+    }
+
+    /// Opens it on `tab` (or on the tab it showed). False: no such tab.
+    pub fn show(&mut self, tab: Option<&str>) -> bool {
+        let Kind::Stack { children, active, .. } = &mut self.stack.kind else { return false };
+        if let Some(tab) = tab {
+            if !children.iter().any(|c| c.id == tab) {
+                return false;
+            }
+            *active = Some(tab.to_owned());
+        }
+        self.stack.hidden = false;
+        !children.is_empty()
+    }
+}
+
+/// The mod slot of a sidebar tab: `<block>#sidebar:<tab>`.
+pub fn sidebar_slot(block: &str, tab: &str) -> String {
+    format!("{block}#sidebar:{tab}")
+}
+
+/// The block a sidebar slot (or the sidebar itself, `<block>#sidebar`) belongs to.
+pub fn sidebar_owner(slot: &str) -> Option<&str> {
+    slot.split_once("#sidebar").filter(|(_, rest)| rest.is_empty() || rest.starts_with(':')).map(|(block, _)| block)
+}
+
 /// Where along its edge a floating block sits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -365,6 +425,9 @@ pub struct Node {
     /// Blocks floating over this node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub floating: Vec<Float>,
+    /// A block's own sidebar: tabs of mods beside it, sharing its place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar: Option<Box<Sidebar>>,
     /// Root only: `"system"` (default) or `"none"` (the layout draws its own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub titlebar: Option<Titlebar>,
@@ -413,6 +476,7 @@ impl Node {
             closable: None,
             resizable: None,
             floating: Vec::new(),
+            sidebar: None,
             titlebar: None,
             traffic_lights: None,
             preview: None,
@@ -602,6 +666,42 @@ impl Node {
         let mut wrapper = Node::container(t.id.clone(), axis, vec![old, new]);
         wrapper.size = slot_size;
         *t = wrapper;
+        true
+    }
+
+    /// Puts `tab` in this block's sidebar (in place of one with its id),
+    /// shows it and opens the sidebar.
+    pub fn open_sidebar(&mut self, tab: Node) -> &mut Sidebar {
+        let sidebar = self.sidebar.get_or_insert_with(|| Box::new(Sidebar::new()));
+        if let Kind::Stack { children, active, .. } = &mut sidebar.stack.kind {
+            *active = Some(tab.id.clone());
+            match children.iter_mut().find(|c| c.id == tab.id) {
+                Some(old) => *old = tab,
+                None => children.push(tab),
+            }
+        }
+        sidebar.stack.hidden = false;
+        sidebar
+    }
+
+    /// Takes the `tab` out of the sidebar (with the last tab, the sidebar
+    /// goes), or without one hides the sidebar. False: nothing to close.
+    pub fn close_sidebar(&mut self, tab: Option<&str>) -> bool {
+        let Some(sidebar) = self.sidebar.as_mut() else { return false };
+        let Some(tab) = tab else {
+            let was = !sidebar.stack.hidden;
+            sidebar.stack.hidden = true;
+            return was;
+        };
+        let Kind::Stack { children, active, .. } = &mut sidebar.stack.kind else { return false };
+        let Some(i) = children.iter().position(|c| c.id == tab) else { return false };
+        children.remove(i);
+        if active.as_deref() == Some(tab) {
+            *active = children.get(i.saturating_sub(1)).map(|c| c.id.clone());
+        }
+        if children.is_empty() {
+            self.sidebar = None;
+        }
         true
     }
 
@@ -874,5 +974,41 @@ mod tests {
         let ids: Vec<_> = n.children().iter().map(|c| c.id.clone()).collect();
         assert_eq!(ids, ["c", "b", "a"]);
         assert_eq!(n.children()[0].size, Some(Size::Px { px: 100.0 }));
+    }
+
+    fn tab(id: &str) -> Node {
+        Node::block(id, Content::Mod { name: id.into(), props: Value::Null })
+    }
+
+    #[test]
+    fn sidebar_tabs_open_select_and_close() {
+        let mut p = Node::block("p1", Content::Terminal { terminal: "m/t1".into() });
+        p.open_sidebar(tab("draft"));
+        p.open_sidebar(tab("notes")).side = Edge::Left;
+        let s = p.sidebar.as_ref().unwrap();
+        assert_eq!((s.side, s.shown(), s.stack.active_child().map(|c| c.id.as_str())), (Edge::Left, true, Some("notes")));
+        p.open_sidebar(tab("draft"));
+        assert_eq!(p.sidebar.as_ref().unwrap().tabs().len(), 2);
+        assert!(p.close_sidebar(None) && !p.sidebar.as_ref().unwrap().shown());
+        assert!(!p.close_sidebar(None));
+        assert!(p.close_sidebar(Some("draft")));
+        assert_eq!(p.sidebar.as_ref().unwrap().stack.active_child().map(|c| c.id.as_str()), Some("notes"));
+        assert!(p.close_sidebar(Some("notes")) && p.sidebar.is_none());
+    }
+
+    #[test]
+    fn sidebars_keep_their_width_bounds_and_travel_with_their_pane() {
+        let json = r#"{ "id": "r", "type": "row", "children": [
+          { "id": "a", "type": "block", "content": { "terminal": "t1" },
+            "sidebar": { "side": "left", "stack": { "id": "sidebar", "type": "stack", "size": { "px": 900 }, "max": 500,
+              "children": [ { "id": "x", "type": "block", "title": "X", "content": { "mod": "x", "props": { "k": 1 } } } ] } } },
+          { "id": "b", "type": "block", "content": { "terminal": "t2" } } ] }"#;
+        let mut n: Node = serde_json::from_str(json).unwrap();
+        assert_eq!(n.find("a").unwrap().sidebar.as_ref().unwrap().px(), 500.0);
+        assert_eq!(serde_json::from_str::<Node>(&serde_json::to_string(&n).unwrap()).unwrap(), n);
+        assert_eq!(n.panes().len(), 2);
+        n.swap("a", "b");
+        assert_eq!(n.children()[1].sidebar.as_ref().unwrap().tabs()[0].title.as_deref(), Some("X"));
+        assert_eq!((sidebar_owner(&sidebar_slot("m/p1", "x")), sidebar_owner("m/p1#sidebar"), sidebar_owner("m/p1#frame")), (Some("m/p1"), Some("m/p1"), None));
     }
 }

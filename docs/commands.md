@@ -91,13 +91,14 @@ Rename a tab (asks the person when no name; an empty name: called by its number 
 
 ## `tab.move`
 
-Move a tab to a position (1 = first), or append it to a space on the same machine.
+Move a tab to a position (1 = first), or append it to a space on the same machine. Tab splits it into another tab beside that tab's focused pane.
 
 | Argument | Required |
 |---|---|
 | `id` | yes |
 | `index` | no |
 | `space` | no |
+| `tab` | no |
 
 ## `space.from`
 
@@ -326,6 +327,61 @@ Swap the focused pane with its neighbor in a direction.
 |---|---|
 | `direction` | yes |
 
+## `pane.sidebar.open`
+
+Open a pane's own sidebar (default: the focused pane) on a mod tab: adds it (id defaults to the mod name; the same id replaces it) or, without mod, shows tab id or the last shown. The pane keeps the rest of its width. side: "left" or "right"; px, min, max: its width; focus: true gives it the keyboard.
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+| `terminal` | no |
+| `mod` | no |
+| `id` | no |
+| `title` | no |
+| `props` | no |
+| `side` | no |
+| `px` | no |
+| `min` | no |
+| `max` | no |
+| `focus` | no |
+
+## `pane.sidebar.close`
+
+Hide a pane's sidebar, or with id remove that tab (the last tab removes the sidebar).
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+| `terminal` | no |
+| `id` | no |
+
+## `pane.sidebar.toggle`
+
+Open a pane's sidebar as pane.sidebar.open does, or hide it when it already shows that tab (or any tab, without mod and id).
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+| `terminal` | no |
+| `mod` | no |
+| `id` | no |
+| `title` | no |
+| `props` | no |
+| `side` | no |
+| `px` | no |
+| `min` | no |
+| `max` | no |
+| `focus` | no |
+
+## `pane.sidebar.focus`
+
+Give a pane's open sidebar the keyboard, or give it back to the pane when the sidebar has it (Esc in a sidebar).
+
+| Argument | Required |
+|---|---|
+| `pane` | no |
+| `terminal` | no |
+
 ## `terminal.peek`
 
 Peek at a running terminal over the tab, with keep-as-tab and close controls.
@@ -491,11 +547,25 @@ Reset a shipped layout and its clicks (the old file is kept aside).
 
 ## `mod.open`
 
-Toggle a mod as the overlay its mod.json describes; calling again closes it.
+Toggle a mod as the overlay its mod.json describes; calling again closes it. With a pane or terminal: a window inside that pane. `props` add to its mod.json props.
 
 | Argument | Required |
 |---|---|
 | `name` | yes |
+| `pane` | no |
+| `terminal` | no |
+| `props` | no |
+
+## `mod.show`
+
+Open a mod like mod.open, but leave it open (and raise it) when it already is.
+
+| Argument | Required |
+|---|---|
+| `name` | yes |
+| `pane` | no |
+| `terminal` | no |
+| `props` | no |
 
 ## `overlay.close`
 
@@ -593,6 +663,12 @@ No arguments.
 ## `app.update`
 
 Restart into the update Herdr downloaded (your terminals keep running).
+
+No arguments.
+
+## `app.restart`
+
+Restart the window; your terminals keep running.
 
 No arguments.
 

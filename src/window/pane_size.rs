@@ -94,7 +94,7 @@ fn pane_size(n: &Node, size: Size<Pixels>, target: &str, frame: Option<&PaneFram
                 let header = frame.header.as_ref().filter(|h| !h.hover()).map_or(0.0, header_height) * zoom;
                 size = inset(size, 2.0 * border, 2.0 * border + header);
             }
-            Some(size)
+            Some(inset(size, super::pane_sidebar::taken(n) * zoom, 0.0))
         }
         Kind::Row { children } | Kind::Column { children } => {
             let row = n.axis() == Some(Axis::Row);

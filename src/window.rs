@@ -9,6 +9,7 @@ mod floats;
 mod movable;
 mod pane_drag;
 mod pane_size;
+mod pane_sidebar;
 mod focus_history;
 mod wheel_tilt;
 mod titlebar;
@@ -344,6 +345,15 @@ struct Overlay {
     frame: bool,
 }
 
+/// A tab in a plain tab strip: the command its click runs, and its ✕ (if any).
+struct StripTab {
+    key: String,
+    title: String,
+    on: bool,
+    select: (&'static str, Value),
+    close: Option<(&'static str, Value)>,
+}
+
 struct Drag {
     container: String,
     index: usize,
@@ -399,6 +409,8 @@ pub struct AppWindow {
     growth: RefCell<crate::focus_grow::Growth>,
     press_holds_growth: bool,
     drag: Option<Drag>,
+    /// The pane whose sidebar shows its + list.
+    sidebar_menu: Option<String>,
     written_layout: String,
     /// The shown layout as its file has it; `chrome` is this plus the clicks
     /// (layout_sync.rs).
@@ -517,6 +529,7 @@ impl AppWindow {
             growth: RefCell::new(growth),
             press_holds_growth: false,
             drag: None,
+            sidebar_menu: None,
             written_layout: String::new(),
             file_chrome: default_layout("main"),
             written_state: String::new(),
@@ -1236,6 +1249,7 @@ impl AppWindow {
                 {
                     mods.push(pane_header_mod(n, name, props));
                 }
+                mods.extend(pane_sidebar::sidebar_mods(n, false));
                 visit(n, &mut terms, &mut mods);
                 if let Some(a) = self.swapped.get(&n.id) {
                     terms.push((format!("{}{SWAP}", n.id), a.clone()));
@@ -1301,6 +1315,7 @@ impl AppWindow {
                     let (slot, i) = pane_header_mod(n, name, props);
                     out.insert(slot, i);
                 }
+                out.extend(pane_sidebar::sidebar_mods(n, true));
             }
         }
         for o in &self.overlays {
@@ -1322,7 +1337,7 @@ impl AppWindow {
     /// tab) and overlays stay.
     fn drop_layout_copies(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let gone: Vec<_> = self.copies.keys().filter(|s| {
-            self.model.tab_of(s).is_none() && !self.overlays.iter().any(|o| o.slot == **s || o.layout.as_ref().is_some_and(|l| l.find(s).is_some()))
+            self.model.tab_of(crate::layout::sidebar_owner(s).unwrap_or(s)).is_none() && !self.overlays.iter().any(|o| o.slot == **s || o.layout.as_ref().is_some_and(|l| l.find(s).is_some()))
         }).cloned().collect();
         for slot in gone {
             self.remove_copy(&slot, window, cx);
@@ -1499,7 +1514,8 @@ impl AppWindow {
         };
         let pane_changed = focused != self.focused_pane;
         // A pane focused some other way, or the block leaving, ends it.
-        if (pane_changed && self.focused_block != focused) || self.focused_block.as_ref().is_some_and(|b| !self.mod_block_shown(b)) {
+        let block_pane = self.focused_block.as_deref().map(|b| crate::layout::sidebar_owner(b).unwrap_or(b));
+        if (pane_changed && block_pane != focused.as_deref()) || self.focused_block.as_ref().is_some_and(|b| !self.mod_block_shown(b)) {
             self.focused_block = None;
         }
         // Mod blocks too, so `pane.go` goes back to a mod it came from.
@@ -1754,7 +1770,7 @@ impl AppWindow {
                     let zoomed = ctx.zoomed.as_deref() == Some(p.id.as_str());
                     // A mod pane: what it shows, no terminal.
                     if let Some(Content::Mod { name, .. }) = p.content() {
-                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
+                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "tab": ctx.id, "title": name, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id), "sidebar": pane_sidebar::sidebar_info(p) }));
                         continue;
                     }
                     let Some(addr) = p.terminal() else { continue };
@@ -1766,7 +1782,7 @@ impl AppWindow {
                         "pane": p.id, "terminal": addr, "tab": ctx.id, "title": title.clone().unwrap_or_default(),
                         "cwd": self.cwds.get(addr), "branch": m.folder_info.get(addr).and_then(|f| f.branch.clone()),
                         "status": m.status(addr), "app": a.and_then(|a| a.app.clone()), "program": self.program(addr),
-                        "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id),
+                        "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id), "sidebar": pane_sidebar::sidebar_info(p),
                     }));
                     let Some(status) = m.status(addr) else { continue };
                     agents.push(json!({
@@ -2853,7 +2869,7 @@ impl AppWindow {
             if !args.is_object() { args = json!({}); }
             args["machine"] = json!(machine);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "space.from" | "pane.move" | "pane.split" | "pane.close" | "pane.swap" | "terminal.keep" | "terminal.park") {
+        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "space.from" | "pane.move" | "pane.split" | "pane.close" | "pane.swap" | "pane.sidebar.open" | "pane.sidebar.close" | "pane.sidebar.toggle" | "terminal.keep" | "terminal.park") {
             let node = ["id", "space", "pane", "tab"].into_iter().find_map(|k| Self::arg(&args, k));
             let target = node.and_then(|id| self.model.space(id).or_else(|| self.model.space_of(id))).or_else(|| self.model.active_space());
             let machine = if name == "space.new" { Self::arg(&args, "machine") }
@@ -3073,6 +3089,7 @@ impl AppWindow {
                 self.model.remove_pane(&pane);
                 self.kill(&addr.into_iter().collect::<Vec<_>>(), cx);
             }
+            "pane.sidebar.open" | "pane.sidebar.close" | "pane.sidebar.toggle" | "pane.sidebar.focus" => self.sidebar_command(name, a, window, cx),
             "pane.zoom" => {
                 let pane = Self::owned(a, "pane").or_else(|| self.model.focused_pane());
                 if let Some(pane) = pane
@@ -3602,8 +3619,9 @@ impl AppWindow {
 
     /// Until the mod takes the keyboard, the window holds the keys.
     fn focus_block(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.tab_of(id).is_some() {
-            self.model.focus_pane(id);
+        let pane = crate::layout::sidebar_owner(id).unwrap_or(id);
+        if self.model.tab_of(pane).is_some() {
+            self.model.focus_pane(pane);
             self.focused_pane = None;
         }
         self.focused_block = Some(id.to_owned());
@@ -3625,7 +3643,8 @@ impl AppWindow {
     fn mod_block_shown(&self, id: &str) -> bool {
         self.copies.contains_key(id)
             && (self.chrome.visible_blocks().iter().any(|n| n.id == id && matches!(n.content(), Some(Content::Mod { .. })))
-                || self.model.active_tab().is_some_and(|t| t.shown().visible_blocks().iter().any(|n| n.id == id)))
+                || self.model.active_tab().is_some_and(|t| t.shown().visible_blocks().iter().any(|n| n.id == id))
+                || self.sidebar_tab_shown(id))
     }
 
     /// Its mod.json says `"focusable": true` (`go` asks only of visible blocks).
@@ -4208,6 +4227,7 @@ impl AppWindow {
         let el = match &n.kind {
             Kind::Block { content } => {
                 let inner = self.render_block(n, content, focused, cx);
+                let inner = self.with_sidebar(n, inner, cx);
                 match frame.filter(|_| n.is_pane()) {
                     Some(f) => el.child(self.frame_pane(n, f, focused.contains(&n.id), inner, cx)),
                     None => el.child(inner),
@@ -4327,6 +4347,7 @@ impl AppWindow {
         // A mod that is a pane in a tab: a click makes it the focused pane, and the
         // keyboard is its own (an editor, a board), like a terminal's.
         let in_pane = self.model.tab_of(slot).is_some();
+        let in_sidebar = crate::layout::sidebar_owner(slot).is_some();
         match self.copies.get(slot) {
             Some(Copy { root: Some(root), inst, .. }) => div()
                 .size_full()
@@ -4345,7 +4366,15 @@ impl AppWindow {
                 })
                 // Bare layout clicks leave the keyboard with the pane, but an input
                 // or other focusable control owns the keyboard once it takes focus.
-                .when(!in_overlay && !in_pane, |d| {
+                // A pane sidebar tab holds the keyboard after a press, like a focused block.
+                .when(in_sidebar, |d| {
+                    let id = slot.to_owned();
+                    d.on_any_mouse_down(cx.listener(move |_, _, window, cx| {
+                        let id = id.clone();
+                        cx.defer_in(window, move |this, window, cx| this.enter_sidebar(&id, window, cx));
+                    }))
+                })
+                .when(!in_overlay && !in_pane && !in_sidebar, |d| {
                     d.capture_any_mouse_down(cx.listener(|_, _, window, cx| {
                         cx.defer_in(window, |this, window, cx| this.refocus_pane(window, cx));
                     }))
@@ -4373,24 +4402,55 @@ impl AppWindow {
     /// Plain fallback for `"header": { "content": "tabs" }`.
     fn builtin_tabs(&self, n: &Node, cx: &mut Context<Self>) -> AnyElement {
         let active = n.active_child().map(|c| c.id.clone());
-        let stack = n.id.clone();
+        let tabs = n
+            .children()
+            .iter()
+            .enumerate()
+            .map(|(i, ch)| StripTab {
+                key: ch.id.clone(),
+                title: ch.title.clone().unwrap_or_else(|| (i + 1).to_string()),
+                on: active.as_deref() == Some(ch.id.as_str()),
+                select: ("layout.select", json!({ "stack": n.id, "child": ch.id })),
+                close: None,
+            })
+            .collect();
+        self.tab_strip(tabs, cx).into_any_element()
+    }
+
+    /// A row of plain tabs, each running its command on a click (and its
+    /// close command on its ✕).
+    fn tab_strip(&self, tabs: Vec<StripTab>, cx: &mut Context<Self>) -> Div {
         let mut row = div().size_full().flex().flex_row().bg(c("surface")).text_xs();
-        for (i, ch) in n.children().iter().enumerate() {
-            let (s, id) = (stack.clone(), ch.id.clone());
-            let on = active.as_deref() == Some(ch.id.as_str());
+        for t in tabs {
+            let (name, args) = t.select;
             row = row.child(
                 div()
-                    .id(SharedString::from(format!("tab-{}", ch.id)))
+                    .id(SharedString::from(format!("tab-{}", t.key)))
                     .px_3()
                     .flex()
                     .items_center()
-                    .text_color(if on { c("foreground") } else { c("muted") })
-                    .when(on, |d| d.bg(c("raised")))
-                    .on_click(cx.listener(move |this, _, w, cx| this.run("layout.select", json!({ "stack": s, "child": id }), w, cx)))
-                    .child(ch.title.clone().unwrap_or_else(|| (i + 1).to_string())),
+                    .gap_1()
+                    .text_color(if t.on { c("foreground") } else { c("muted") })
+                    .when(t.on, |d| d.bg(c("raised")))
+                    .on_click(cx.listener(move |this, _, w, cx| this.run(name, args.clone(), w, cx)))
+                    .child(t.title)
+                    .when_some(t.close, |d, (name, args)| {
+                        d.child(
+                            div()
+                                .id(SharedString::from(format!("tab-close-{}", t.key)))
+                                .px_1()
+                                .text_color(c("muted"))
+                                .hover(|d| d.text_color(c("foreground")))
+                                .child("✕")
+                                .on_click(cx.listener(move |this, _, w, cx| {
+                                    cx.stop_propagation();
+                                    this.run(name, args.clone(), w, cx);
+                                })),
+                        )
+                    }),
             );
         }
-        row.into_any_element()
+        row
     }
 
     fn separator(&self, n: &Node, axis: Axis, gap: f32, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -4435,6 +4495,9 @@ impl AppWindow {
     fn drag_to(&mut self, pos: Point<Pixels>) {
         let Some(d) = &self.drag else { return };
         let (container, index, axis) = (d.container.clone(), d.index, d.axis);
+        if let Some(pane) = crate::layout::sidebar_owner(&container) {
+            return self.drag_sidebar(&pane.to_owned(), pos);
+        }
         let Some(node) = self.find_node_mut(&container).map(|n| n.clone()) else { return };
         let shown: Vec<&Node> = node.children().iter().filter(|c| !c.hidden).collect();
         let (Some(a), Some(b)) = (shown.get(index), shown.get(index + 1)) else { return };
@@ -5067,7 +5130,7 @@ impl Render for AppWindow {
             .id("herdr")
             .track_focus(&self.focus)
             // `layout:<name>` key sections apply while that layout shows.
-            .key_context(format!("Herdr layout = {}", self.layout_name).as_str())
+            .key_context(format!("Herdr layout = {}{}", self.layout_name, if self.focused_block.as_deref().and_then(crate::layout::sidebar_owner).is_some() { " PaneSidebar" } else { "" }).as_str())
             .size_full()
             .relative()
             .bg(c("background"))

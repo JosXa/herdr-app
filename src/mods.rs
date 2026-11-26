@@ -348,6 +348,24 @@ pub struct Hint {
     /// `pane.go` can give it the keyboard.
     #[serde(default)]
     pub focusable: bool,
+    /// It can be a tab in a pane's sidebar (offered by the sidebar's +).
+    #[serde(default)]
+    pub sidebar: Option<SidebarHint>,
+}
+
+/// mod.json `"sidebar"`: how its pane sidebar tab starts.
+#[derive(Deserialize, Default, Clone)]
+pub struct SidebarHint {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub side: Option<crate::layout::Edge>,
+    #[serde(default)]
+    pub px: Option<f32>,
+    #[serde(default)]
+    pub min: Option<f32>,
+    #[serde(default)]
+    pub max: Option<f32>,
 }
 
 #[derive(Clone)]

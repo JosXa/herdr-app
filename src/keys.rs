@@ -268,6 +268,7 @@ pub fn install(bindings: Vec<KeyBinding>, cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(ESCAPE_HATCH, ShellAction::new("app.reset"), None),
         KeyBinding::new("escape", ShellAction::new("overlay.close"), Some("Overlay")),
+        KeyBinding::new("escape", ShellAction::new("pane.sidebar.focus"), Some("PaneSidebar")),
     ]);
 }
 

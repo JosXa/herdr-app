@@ -212,6 +212,18 @@ export interface PaneInfo {
   zoomed: boolean;
   /** The app's top-center grip can rearrange this pane. False when zoomed or alone. */
   movable: boolean;
+  /** The pane's own sidebar (`pane.sidebar.open`), or null when it has none. */
+  sidebar: PaneSidebar | null;
+}
+
+export interface PaneSidebar {
+  /** False while hidden; its tabs stay. */
+  open: boolean;
+  side: "left" | "right";
+  px: number;
+  /** The shown tab's id. */
+  active: string | null;
+  tabs: { id: string; mod: string; title: string }[];
 }
 
 /** Every pane in every tab. A pane header mod finds its own with

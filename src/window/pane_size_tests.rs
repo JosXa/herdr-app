@@ -31,7 +31,9 @@ fn initial_pane_size(cx: &mut gpui::TestAppContext) {
         ("headers-padding", framed, vec![Row, Column]),
         ("main-right", main.clone(), vec![Row]),
         ("main-down", main.clone(), vec![Column]),
-        ("main-nested", main, vec![Row, Column, Row]),
+        ("main-nested", main.clone(), vec![Row, Column, Row]),
+        ("sidebar", plain.clone(), vec![Row]),
+        ("sidebar-main", main, vec![Row, Column]),
     ] {
         let mut root = crate::model::pane("a", "probe-a");
         let mut target = "a".to_owned();
@@ -62,6 +64,10 @@ fn initial_pane_size(cx: &mut gpui::TestAppContext) {
             "constrained-mixed" => {
                 root.find_mut("a").unwrap().min = Some(1100.0);
                 root.find_mut("p0").unwrap().max = Some(100.0);
+            }
+            "sidebar" | "sidebar-main" => {
+                let tab = serde_json::from_value(json!({"id": "probe", "type": "block", "content": {"mod": "size-probe"}})).unwrap();
+                root.find_mut(&target).unwrap().open_sidebar(tab);
             }
             _ => {}
         }
